@@ -180,8 +180,15 @@ export interface JwtPayload {
   branchId: string;
   role: UserRole;
   username: string;
+  tenantId?: string;
+  tenantCode?: string;
 }
 
 export interface AuthRequest extends Express.Request {
   user?: JwtPayload;
+}
+
+export interface TenantAuthRequest extends AuthRequest {
+  tenantId?: string;
+  tenantCode?: string;
 }

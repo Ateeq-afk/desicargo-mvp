@@ -13,6 +13,7 @@ dotenv.config();
 
 // Import routes
 import authRoutes from './routes/auth.routes';
+import tenantRoutes from './routes/tenant.routes';
 import dashboardRoutes from './routes/dashboard.routes';
 import masterRoutes from './routes/master.routes';
 import consignmentRoutes from './routes/consignment.routes';
@@ -27,10 +28,13 @@ import customerRoutes from './routes/customer.routes';
 import goodsRoutes from './routes/goods.routes';
 import rateRoutes from './routes/rate.routes';
 import expenseRoutes from './routes/expenseRoutes';
+import superAdminRoutes from './routes/superadmin.routes';
+import bookingEnhancementRoutes from './routes/bookingEnhancement.routes';
 
 // Import middleware
 import { errorHandler } from './middleware/error.middleware';
 import { notFound } from './middleware/notFound.middleware';
+import { tenantMiddleware, releaseTenantConnection } from './middleware/tenant.middleware';
 
 // Import socket handlers
 import { initializeSocketHandlers } from './sockets';
@@ -62,24 +66,7 @@ app.use(express.urlencoded({ extended: true }));
 // Static files for uploads
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
-// API Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/onboarding', onboardingRoutes);
-app.use('/api/dashboard', dashboardRoutes);
-app.use('/api/masters', masterRoutes);
-app.use('/api/customers', customerRoutes);
-app.use('/api/consignments', consignmentRoutes);
-app.use('/api/ogpl', ogplRoutes);
-app.use('/api/delivery-runs', deliveryRoutes);
-app.use('/api/invoices', billingRoutes);
-app.use('/api/reports', reportRoutes);
-app.use('/api/documents', documentRoutes);
-app.use('/api/whatsapp', whatsappRoutes);
-app.use('/api/goods', goodsRoutes);
-app.use('/api/rates', rateRoutes);
-app.use('/api/expenses', expenseRoutes);
-
-// Health check
+// Health check (public - no tenant required)
 app.get('/api/health', (_req, res) => {
   res.json({ 
     status: 'OK', 
@@ -87,6 +74,34 @@ app.get('/api/health', (_req, res) => {
     environment: process.env.NODE_ENV 
   });
 });
+
+// Public routes (no tenant middleware required)
+app.use('/api/tenants', tenantRoutes);
+app.use('/api/auth', authRoutes);
+app.use('/api/onboarding', onboardingRoutes);
+
+// SuperAdmin routes (no tenant middleware required)
+app.use('/api/superadmin', superAdminRoutes);
+
+// Apply tenant middleware for all protected routes
+app.use(tenantMiddleware);
+app.use(releaseTenantConnection);
+
+// Protected routes (require tenant context)
+app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/masters', masterRoutes);
+app.use('/api/customers', customerRoutes);
+app.use('/api/consignments', consignmentRoutes);
+app.use('/api/ogpl', ogplRoutes);
+app.use('/api/delivery-runs', deliveryRoutes);
+app.use('/api/billing', billingRoutes);
+app.use('/api/reports', reportRoutes);
+app.use('/api/documents', documentRoutes);
+app.use('/api/whatsapp', whatsappRoutes);
+app.use('/api/goods', goodsRoutes);
+app.use('/api/rates', rateRoutes);
+app.use('/api/expenses', expenseRoutes);
+app.use('/api/booking-enhancements', bookingEnhancementRoutes);
 
 // Error handling
 app.use(notFound);

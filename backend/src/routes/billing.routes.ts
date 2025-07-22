@@ -31,10 +31,10 @@ router.post('/:id/payment', authenticate, recordPayment);
 router.post('/:id/cancel', authenticate, cancelInvoice);
 
 // Get outstanding report
-router.get('/reports/outstanding', authenticate, getOutstandingReport);
+router.get('/outstanding', authenticate, getOutstandingReport);
 
-// Get daily collection report
-router.get('/reports/daily-collection', authenticate, getDailyCollection);
+// Get daily collection report  
+router.get('/daily-collection', authenticate, getDailyCollection);
 
 // Get customer's invoices
 router.get('/customer/:id', getCustomerInvoices);

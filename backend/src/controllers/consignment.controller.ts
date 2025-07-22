@@ -1,45 +1,20 @@
 import { Request, Response } from 'express';
 import { validationResult } from 'express-validator';
-import { query, withTransaction } from '../config/database';
+import { query, withTransaction, getNextSequenceNumber, queryWithTenant, withTenantTransaction } from '../config/database';
 import { AppError } from '../middleware/error.middleware';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { sendBookingConfirmation, sendDeliveryNotification } from '../services/whatsapp.service';
 
-// Generate consignment number format: BRN2025000001
-const generateCNNumber = async (branchId: string): Promise<string> => {
+interface TenantAuthRequest extends AuthRequest {
+  tenantId?: string;
+  tenantCode?: string;
+}
+
+// Generate consignment number using tenant-specific sequences
+const generateCNNumber = async (tenantId: string, branchId: string): Promise<string> => {
   try {
-    // Get branch code
-    const branchResult = await query(
-      'SELECT branch_code FROM branches WHERE id = $1',
-      [branchId]
-    );
-
-    if (branchResult.rows.length === 0) {
-      throw new AppError('Branch not found', 404);
-    }
-
-    const branchCode = branchResult.rows[0].branch_code;
-    const year = new Date().getFullYear();
-
-    // Get the last CN number for this branch and year
-    const lastCNResult = await query(
-      `SELECT cn_number FROM consignments 
-       WHERE from_branch_id = $1 
-       AND cn_number LIKE $2 
-       ORDER BY cn_number DESC 
-       LIMIT 1`,
-      [branchId, `${branchCode}${year}%`]
-    );
-
-    let sequence = 1;
-    if (lastCNResult.rows.length > 0) {
-      const lastCN = lastCNResult.rows[0].cn_number;
-      const lastSequence = parseInt(lastCN.slice(-6));
-      sequence = lastSequence + 1;
-    }
-
-    // Format: BRN2025000001
-    const cnNumber = `${branchCode}${year}${sequence.toString().padStart(6, '0')}`;
+    // Get next sequence number from tenant sequences
+    const cnNumber = await getNextSequenceNumber(tenantId, 'consignment');
     return cnNumber;
   } catch (error) {
     throw error;
@@ -71,7 +46,7 @@ const calculateGST = (amount: number, fromState: string, toState: string) => {
 };
 
 // Create new consignment
-export const createConsignment = async (req: AuthRequest, res: Response): Promise<void> => {
+export const createConsignment = async (req: TenantAuthRequest, res: Response): Promise<void> => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
     res.status(400).json({
@@ -86,15 +61,22 @@ export const createConsignment = async (req: AuthRequest, res: Response): Promis
     const consignmentData = req.body;
     const userId = req.user?.userId;
     const companyId = req.user?.companyId;
+    const tenantId = req.tenantId;
+
+    if (!tenantId) {
+      throw new AppError('Tenant context required', 401);
+    }
 
     // Get from and to branch states for GST calculation
-    const branchStatesResult = await query(
+    const branchStatesResult = await queryWithTenant(
       `SELECT 
         fb.state as from_state,
         tb.state as to_state
        FROM branches fb, branches tb
-       WHERE fb.id = $1 AND tb.id = $2`,
-      [consignmentData.from_branch_id, consignmentData.to_branch_id]
+       WHERE fb.id = $1 AND tb.id = $2 
+       AND fb.tenant_id = $3 AND tb.tenant_id = $3`,
+      [consignmentData.from_branch_id, consignmentData.to_branch_id, tenantId],
+      tenantId
     );
 
     if (branchStatesResult.rows.length === 0) {
@@ -117,39 +99,41 @@ export const createConsignment = async (req: AuthRequest, res: Response): Promis
     const gst = calculateGST(subtotal, from_state, to_state);
     const totalAmount = subtotal + gst.total;
 
-    // Generate CN number
-    const cnNumber = await generateCNNumber(consignmentData.from_branch_id);
+    // Generate CN number using tenant-specific sequence
+    const cnNumber = await generateCNNumber(tenantId, consignmentData.from_branch_id);
 
-    // Insert consignment
-    const insertResult = await query(
-      `INSERT INTO consignments (
-        company_id, cn_number, booking_date, booking_time,
-        from_branch_id, to_branch_id,
-        consignor_id, consignor_name, consignor_phone, consignor_address, consignor_gstin,
-        consignee_name, consignee_phone, consignee_address, consignee_pincode,
-        goods_description, goods_value, eway_bill_number, invoice_number,
-        no_of_packages, actual_weight, charged_weight,
-        freight_amount, hamali_charges, door_delivery_charges,
-        loading_charges, unloading_charges, other_charges, statistical_charges,
-        gst_percentage, cgst, sgst, igst, total_amount,
-        payment_type, delivery_type, status, current_branch_id,
-        created_by
-      ) VALUES (
-        $1, $2, CURRENT_DATE, CURRENT_TIME,
-        $3, $4,
-        $5, $6, $7, $8, $9,
-        $10, $11, $12, $13,
-        $14, $15, $16, $17,
-        $18, $19, $20,
-        $21, $22, $23,
-        $24, $25, $26, $27,
-        $28, $29, $30, $31, $32,
-        $33, $34, $35, $36,
-        $37
-      ) RETURNING *`,
-      [
-        companyId,
-        cnNumber,
+    // Insert consignment with tenant context
+    const insertResult = await withTenantTransaction(tenantId, async (client) => {
+      const consignmentResult = await client.query(
+        `INSERT INTO consignments (
+          tenant_id, company_id, cn_number, booking_date, booking_time,
+          from_branch_id, to_branch_id,
+          consignor_id, consignor_name, consignor_phone, consignor_address, consignor_gstin,
+          consignee_name, consignee_phone, consignee_address, consignee_pincode,
+          goods_description, goods_value, eway_bill_number, invoice_number,
+          no_of_packages, actual_weight, charged_weight,
+          freight_amount, hamali_charges, door_delivery_charges,
+          loading_charges, unloading_charges, other_charges, statistical_charges,
+          gst_percentage, cgst, sgst, igst, total_amount,
+          payment_type, delivery_type, status, current_branch_id,
+          created_by
+        ) VALUES (
+          $1, $2, $3, CURRENT_DATE, CURRENT_TIME,
+          $4, $5,
+          $6, $7, $8, $9, $10,
+          $11, $12, $13, $14,
+          $15, $16, $17, $18,
+          $19, $20, $21,
+          $22, $23, $24,
+          $25, $26, $27, $28,
+          $29, $30, $31, $32, $33,
+          $34, $35, $36, $37,
+          $38
+        ) RETURNING *`,
+        [
+          tenantId,
+          companyId,
+          cnNumber,
         consignmentData.from_branch_id,
         consignmentData.to_branch_id,
         consignmentData.consignor_id || null,
@@ -184,35 +168,40 @@ export const createConsignment = async (req: AuthRequest, res: Response): Promis
         consignmentData.delivery_type || 'godown',
         'booked',
         consignmentData.from_branch_id,
-        userId
-      ]
-    );
+          userId
+        ]
+      );
 
-    // Add to tracking history
-    await query(
-      `INSERT INTO tracking_history (
-        consignment_id, status, location, branch_id, created_by
-      ) VALUES ($1, $2, $3, $4, $5)`,
-      [
-        insertResult.rows[0].id,
-        'booked',
-        'Consignment booked',
-        consignmentData.from_branch_id,
-        userId
-      ]
-    );
+      // Add to tracking history within the same transaction
+      await client.query(
+        `INSERT INTO tracking_history (
+          tenant_id, consignment_id, status, location, branch_id, created_by
+        ) VALUES ($1, $2, $3, $4, $5, $6)`,
+        [
+          tenantId,
+          consignmentResult.rows[0].id,
+          'booked',
+          'Consignment booked',
+          consignmentData.from_branch_id,
+          userId
+        ]
+      );
+
+      return consignmentResult.rows[0];
+    });
 
     // Send WhatsApp booking confirmation
-    const insertedConsignment = insertResult.rows[0];
+    const insertedConsignment = insertResult;
     try {
       // Get branch details for city names
-      const branchDetailsResult = await query(
+      const branchDetailsResult = await queryWithTenant(
         `SELECT 
           fb.city as from_city,
           tb.city as to_city
          FROM branches fb, branches tb
-         WHERE fb.id = $1 AND tb.id = $2`,
-        [insertedConsignment.from_branch_id, insertedConsignment.to_branch_id]
+         WHERE fb.id = $1 AND tb.id = $2 AND fb.tenant_id = $3 AND tb.tenant_id = $3`,
+        [insertedConsignment.from_branch_id, insertedConsignment.to_branch_id, tenantId],
+        tenantId
       );
 
       if (branchDetailsResult.rows.length > 0) {
@@ -236,7 +225,7 @@ export const createConsignment = async (req: AuthRequest, res: Response): Promis
 
     res.status(201).json({
       success: true,
-      data: insertResult.rows[0],
+      data: insertResult,
       message: 'Consignment booked successfully'
     });
   } catch (error) {
@@ -249,11 +238,16 @@ export const createConsignment = async (req: AuthRequest, res: Response): Promis
 };
 
 // Get consignment by CN number
-export const getConsignmentByCN = async (req: AuthRequest, res: Response): Promise<void> => {
+export const getConsignmentByCN = async (req: TenantAuthRequest, res: Response): Promise<void> => {
   try {
     const { cnNumber } = req.params;
+    const tenantId = req.tenantId;
 
-    const result = await query(
+    if (!tenantId) {
+      throw new AppError('Tenant context required', 401);
+    }
+
+    const result = await queryWithTenant(
       `SELECT 
         c.*,
         fb.name as from_branch_name,
@@ -267,8 +261,9 @@ export const getConsignmentByCN = async (req: AuthRequest, res: Response): Promi
        LEFT JOIN branches tb ON c.to_branch_id = tb.id
        LEFT JOIN branches cb ON c.current_branch_id = cb.id
        LEFT JOIN users u ON c.created_by = u.id
-       WHERE c.cn_number = $1 AND c.company_id = $2`,
-      [cnNumber, req.user?.companyId]
+       WHERE c.cn_number = $1 AND c.tenant_id = $2`,
+      [cnNumber, tenantId],
+      tenantId
     );
 
     if (result.rows.length === 0) {
@@ -280,7 +275,7 @@ export const getConsignmentByCN = async (req: AuthRequest, res: Response): Promi
     }
 
     // Get tracking history
-    const trackingResult = await query(
+    const trackingResult = await queryWithTenant(
       `SELECT 
         th.*,
         b.name as branch_name,
@@ -288,9 +283,10 @@ export const getConsignmentByCN = async (req: AuthRequest, res: Response): Promi
        FROM tracking_history th
        LEFT JOIN branches b ON th.branch_id = b.id
        LEFT JOIN users u ON th.created_by = u.id
-       WHERE th.consignment_id = $1
+       WHERE th.consignment_id = $1 AND th.tenant_id = $2
        ORDER BY th.created_at DESC`,
-      [result.rows[0].id]
+      [result.rows[0].id, tenantId],
+      tenantId
     );
 
     res.json({
@@ -309,8 +305,13 @@ export const getConsignmentByCN = async (req: AuthRequest, res: Response): Promi
 };
 
 // List consignments with filters and pagination
-export const listConsignments = async (req: AuthRequest, res: Response): Promise<void> => {
+export const listConsignments = async (req: TenantAuthRequest, res: Response): Promise<void> => {
   try {
+    const tenantId = req.tenantId;
+    if (!tenantId) {
+      throw new AppError('Tenant context required', 401);
+    }
+
     const {
       page = 1,
       limit = 50,
@@ -323,9 +324,9 @@ export const listConsignments = async (req: AuthRequest, res: Response): Promise
     } = req.query;
 
     const offset = (Number(page) - 1) * Number(limit);
-    let whereConditions = ['c.company_id = $1'];
-    let queryParams: any[] = [req.user?.companyId];
-    let paramCount = 1;
+    let whereConditions = ['c.tenant_id = $1 AND c.company_id = $2'];
+    let queryParams: any[] = [tenantId, req.user?.companyId];
+    let paramCount = 2;
 
     // Add filters
     if (from_date) {
@@ -373,9 +374,10 @@ export const listConsignments = async (req: AuthRequest, res: Response): Promise
     const whereClause = whereConditions.join(' AND ');
 
     // Get total count
-    const countResult = await query(
+    const countResult = await queryWithTenant(
       `SELECT COUNT(*) FROM consignments c WHERE ${whereClause}`,
-      queryParams
+      queryParams,
+      tenantId
     );
     const totalCount = parseInt(countResult.rows[0].count);
 
@@ -385,7 +387,7 @@ export const listConsignments = async (req: AuthRequest, res: Response): Promise
     paramCount++;
     queryParams.push(offset);
 
-    const result = await query(
+    const result = await queryWithTenant(
       `SELECT 
         c.*,
         fb.name as from_branch_name,
@@ -394,13 +396,14 @@ export const listConsignments = async (req: AuthRequest, res: Response): Promise
         tb.city as to_city,
         cb.name as current_branch_name
        FROM consignments c
-       LEFT JOIN branches fb ON c.from_branch_id = fb.id
-       LEFT JOIN branches tb ON c.to_branch_id = tb.id
-       LEFT JOIN branches cb ON c.current_branch_id = cb.id
+       LEFT JOIN branches fb ON c.from_branch_id = fb.id AND fb.tenant_id = c.tenant_id
+       LEFT JOIN branches tb ON c.to_branch_id = tb.id AND tb.tenant_id = c.tenant_id
+       LEFT JOIN branches cb ON c.current_branch_id = cb.id AND cb.tenant_id = c.tenant_id
        WHERE ${whereClause}
        ORDER BY c.booking_date DESC, c.booking_time DESC
        LIMIT $${paramCount - 1} OFFSET $${paramCount}`,
-      queryParams
+      queryParams,
+      tenantId
     );
 
     res.json({
@@ -422,10 +425,15 @@ export const listConsignments = async (req: AuthRequest, res: Response): Promise
 };
 
 // Update consignment status
-export const updateConsignmentStatus = async (req: AuthRequest, res: Response): Promise<void> => {
+export const updateConsignmentStatus = async (req: TenantAuthRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
     const { status, remarks, branch_id } = req.body;
+    const tenantId = req.tenantId;
+
+    if (!tenantId) {
+      throw new AppError('Tenant context required', 401);
+    }
 
     const validStatuses = ['booked', 'picked', 'in_transit', 'reached', 'out_for_delivery', 'delivered', 'undelivered', 'cancelled'];
     
@@ -437,16 +445,16 @@ export const updateConsignmentStatus = async (req: AuthRequest, res: Response): 
       return;
     }
 
-    await withTransaction(async (client) => {
+    await withTenantTransaction(tenantId, async (client) => {
       // Update consignment status
       const updateResult = await client.query(
         `UPDATE consignments 
          SET status = $1, 
              current_branch_id = COALESCE($2, current_branch_id),
              updated_at = CURRENT_TIMESTAMP
-         WHERE id = $3 AND company_id = $4
+         WHERE id = $3 AND company_id = $4 AND tenant_id = $5
          RETURNING *`,
-        [status, branch_id || null, id, req.user?.companyId]
+        [status, branch_id || null, id, req.user?.companyId, tenantId]
       );
 
       if (updateResult.rows.length === 0) {
@@ -456,9 +464,10 @@ export const updateConsignmentStatus = async (req: AuthRequest, res: Response): 
       // Add to tracking history
       await client.query(
         `INSERT INTO tracking_history (
-          consignment_id, status, location, branch_id, remarks, created_by
-        ) VALUES ($1, $2, $3, $4, $5, $6)`,
+          tenant_id, consignment_id, status, location, branch_id, remarks, created_by
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [
+          tenantId,
           id,
           status,
           `Status updated to ${status}`,
@@ -472,15 +481,16 @@ export const updateConsignmentStatus = async (req: AuthRequest, res: Response): 
     });
 
     // Send WhatsApp delivery notification for significant status changes
-    const consignmentData = await query(
+    const consignmentData = await queryWithTenant(
       `SELECT 
         c.*,
         cb.city as current_city,
         cb.name as current_branch_name
        FROM consignments c
-       LEFT JOIN branches cb ON c.current_branch_id = cb.id
-       WHERE c.id = $1`,
-      [id]
+       LEFT JOIN branches cb ON c.current_branch_id = cb.id AND cb.tenant_id = c.tenant_id
+       WHERE c.id = $1 AND c.tenant_id = $2`,
+      [id, tenantId],
+      tenantId
     );
 
     if (consignmentData.rows.length > 0) {
@@ -523,17 +533,23 @@ export const updateConsignmentStatus = async (req: AuthRequest, res: Response): 
 };
 
 // Get pending consignments for OGPL
-export const getPendingForOGPL = async (req: AuthRequest, res: Response): Promise<void> => {
+export const getPendingForOGPL = async (req: TenantAuthRequest, res: Response): Promise<void> => {
   try {
     const { branch_id, to_branch_id } = req.query;
+    const tenantId = req.tenantId;
+
+    if (!tenantId) {
+      throw new AppError('Tenant context required', 401);
+    }
 
     let whereConditions = [
-      'c.company_id = $1',
+      'c.tenant_id = $1',
+      'c.company_id = $2',
       "c.status IN ('booked', 'picked')",
-      'c.id NOT IN (SELECT consignment_id FROM ogpl_details)'
+      'c.id NOT IN (SELECT consignment_id FROM ogpl_details od WHERE od.tenant_id = $1)'
     ];
-    let queryParams: any[] = [req.user?.companyId];
-    let paramCount = 1;
+    let queryParams: any[] = [tenantId, req.user?.companyId];
+    let paramCount = 2;
 
     if (branch_id) {
       paramCount++;
@@ -549,18 +565,19 @@ export const getPendingForOGPL = async (req: AuthRequest, res: Response): Promis
 
     const whereClause = whereConditions.join(' AND ');
 
-    const result = await query(
+    const result = await queryWithTenant(
       `SELECT 
         c.*,
         fb.name as from_branch_name,
         tb.name as to_branch_name,
         tb.city as to_city
        FROM consignments c
-       LEFT JOIN branches fb ON c.from_branch_id = fb.id
-       LEFT JOIN branches tb ON c.to_branch_id = tb.id
+       LEFT JOIN branches fb ON c.from_branch_id = fb.id AND fb.tenant_id = c.tenant_id
+       LEFT JOIN branches tb ON c.to_branch_id = tb.id AND tb.tenant_id = c.tenant_id
        WHERE ${whereClause}
        ORDER BY c.booking_date, c.booking_time`,
-      queryParams
+      queryParams,
+      tenantId
     );
 
     res.json({
@@ -580,6 +597,8 @@ export const trackConsignment = async (req: Request, res: Response): Promise<voi
   try {
     const { cnNumber } = req.params;
 
+    // For public tracking, we need to find the consignment without tenant context
+    // CN numbers should be unique across the system
     const result = await query(
       `SELECT 
         c.cn_number,
@@ -589,13 +608,14 @@ export const trackConsignment = async (req: Request, res: Response): Promise<voi
         c.no_of_packages,
         c.status,
         c.delivery_type,
+        c.tenant_id,
         fb.city as from_city,
         tb.city as to_city,
         cb.city as current_location
        FROM consignments c
-       LEFT JOIN branches fb ON c.from_branch_id = fb.id
-       LEFT JOIN branches tb ON c.to_branch_id = tb.id
-       LEFT JOIN branches cb ON c.current_branch_id = cb.id
+       LEFT JOIN branches fb ON c.from_branch_id = fb.id AND fb.tenant_id = c.tenant_id
+       LEFT JOIN branches tb ON c.to_branch_id = tb.id AND tb.tenant_id = c.tenant_id
+       LEFT JOIN branches cb ON c.current_branch_id = cb.id AND cb.tenant_id = c.tenant_id
        WHERE c.cn_number = $1`,
       [cnNumber]
     );
@@ -608,7 +628,10 @@ export const trackConsignment = async (req: Request, res: Response): Promise<voi
       return;
     }
 
-    // Get tracking history
+    const consignment = result.rows[0];
+    const tenantId = consignment.tenant_id;
+
+    // Get tracking history using the tenant context from the consignment
     const trackingResult = await query(
       `SELECT 
         th.status,
@@ -616,16 +639,20 @@ export const trackConsignment = async (req: Request, res: Response): Promise<voi
         th.created_at,
         b.city as branch_city
        FROM tracking_history th
-       LEFT JOIN branches b ON th.branch_id = b.id
-       WHERE th.consignment_id = (SELECT id FROM consignments WHERE cn_number = $1)
+       LEFT JOIN branches b ON th.branch_id = b.id AND b.tenant_id = th.tenant_id
+       WHERE th.consignment_id = (SELECT id FROM consignments WHERE cn_number = $1 AND tenant_id = $2)
+       AND th.tenant_id = $2
        ORDER BY th.created_at DESC`,
-      [cnNumber]
+      [cnNumber, tenantId]
     );
+
+    // Remove tenant_id from response for security
+    delete consignment.tenant_id;
 
     res.json({
       success: true,
       data: {
-        ...result.rows[0],
+        ...consignment,
         tracking_history: trackingResult.rows
       }
     });

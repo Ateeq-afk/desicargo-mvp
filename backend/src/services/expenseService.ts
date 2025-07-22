@@ -157,7 +157,7 @@ export class ExpenseService {
 
   async deleteExpense(id: string): Promise<boolean> {
     const result = await pool.query('DELETE FROM expenses WHERE id = $1', [id]);
-    return result.rowCount > 0;
+    return (result.rowCount ?? 0) > 0;
   }
 
   async getTripPL(ogplId: string): Promise<TripPLReport> {

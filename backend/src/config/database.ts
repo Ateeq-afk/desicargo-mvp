@@ -1,4 +1,4 @@
-import { Pool } from 'pg';
+import { Pool, PoolClient } from 'pg';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -73,6 +73,105 @@ export const withTransaction = async (callback: (client: any) => Promise<any>): 
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
+  } finally {
+    client.release();
+  }
+};
+
+// Set tenant context for RLS
+export const setTenantContext = async (client: PoolClient, tenantId: string): Promise<void> => {
+  await client.query('SELECT set_config($1, $2, true)', ['app.current_tenant', tenantId]);
+};
+
+// Query with tenant context
+export const queryWithTenant = async (
+  text: string, 
+  params: any[], 
+  tenantId: string
+): Promise<any> => {
+  const client = await pool.connect();
+  try {
+    await setTenantContext(client, tenantId);
+    const result = await client.query(text, params);
+    return result;
+  } finally {
+    client.release();
+  }
+};
+
+// Get a connection with tenant context set
+export const getTenantConnection = async (tenantId: string): Promise<PoolClient> => {
+  const client = await pool.connect();
+  try {
+    await setTenantContext(client, tenantId);
+    return client;
+  } catch (error) {
+    client.release();
+    throw error;
+  }
+};
+
+// Transaction helper with tenant context
+export const withTenantTransaction = async (
+  tenantId: string,
+  callback: (client: PoolClient) => Promise<any>
+): Promise<any> => {
+  const client = await pool.connect();
+  try {
+    await setTenantContext(client, tenantId);
+    await client.query('BEGIN');
+    const result = await callback(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
+// Get next sequence number for tenant
+export const getNextSequenceNumber = async (
+  tenantId: string,
+  sequenceType: string,
+  client?: PoolClient
+): Promise<string> => {
+  const queryText = 'SELECT get_next_sequence_number($1, $2) as sequence_number';
+  const params = [tenantId, sequenceType];
+  
+  if (client) {
+    const result = await client.query(queryText, params);
+    return result.rows[0].sequence_number;
+  } else {
+    const result = await queryWithTenant(queryText, params, tenantId);
+    return result.rows[0].sequence_number;
+  }
+};
+
+// Initialize tenant sequences
+export const initializeTenantSequences = async (
+  tenantId: string,
+  tenantCode: string
+): Promise<void> => {
+  const client = await getTenantConnection(tenantId);
+  try {
+    const sequences = [
+      { type: 'consignment', prefix: 'CN', suffix: '', reset_period: 'yearly' },
+      { type: 'ogpl', prefix: 'OGPL', suffix: '', reset_period: 'yearly' },
+      { type: 'invoice', prefix: 'INV', suffix: '', reset_period: 'yearly' },
+      { type: 'receipt', prefix: 'RCP', suffix: '', reset_period: 'yearly' },
+      { type: 'delivery_run', prefix: 'DEL', suffix: '', reset_period: 'daily' }
+    ];
+
+    for (const seq of sequences) {
+      await client.query(
+        `INSERT INTO tenant_sequences (tenant_id, sequence_type, current_value, prefix, suffix, reset_period)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (tenant_id, sequence_type) DO NOTHING`,
+        [tenantId, seq.type, 0, seq.prefix, seq.suffix, seq.reset_period]
+      );
+    }
   } finally {
     client.release();
   }

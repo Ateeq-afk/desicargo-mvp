@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { RateService } from '../services/rate.service';
-import { AuthRequest } from '../middleware/auth';
+import { AuthRequest } from '../middleware/auth.middleware';
 
 export class RateController {
   // Get all rates
@@ -8,7 +8,7 @@ export class RateController {
     try {
       const { is_active } = req.query;
       const rates = await RateService.getRates(
-        req.user!.company_id,
+        req.user!.companyId,
         is_active !== undefined ? is_active === 'true' : undefined
       );
 
@@ -26,7 +26,7 @@ export class RateController {
   }
 
   // Get rate by route
-  static async getRateByRoute(req: AuthRequest, res: Response) {
+  static async getRateByRoute(req: AuthRequest, res: Response): Promise<Response | void> {
     try {
       const { from_city, to_city, goods_type } = req.query;
 
@@ -38,7 +38,7 @@ export class RateController {
       }
 
       const rate = await RateService.getRateByRoute(
-        req.user!.company_id,
+        req.user!.companyId,
         from_city as string,
         to_city as string,
         goods_type as string
@@ -58,7 +58,7 @@ export class RateController {
   }
 
   // Get all rates for a route (all goods types)
-  static async getRatesForRoute(req: AuthRequest, res: Response) {
+  static async getRatesForRoute(req: AuthRequest, res: Response): Promise<Response | void> {
     try {
       const { from_city, to_city } = req.query;
 
@@ -70,7 +70,7 @@ export class RateController {
       }
 
       const rates = await RateService.getRatesForRoute(
-        req.user!.company_id,
+        req.user!.companyId,
         from_city as string,
         to_city as string
       );
@@ -89,7 +89,7 @@ export class RateController {
   }
 
   // Get rate comparison for a route
-  static async getRateComparison(req: AuthRequest, res: Response) {
+  static async getRateComparison(req: AuthRequest, res: Response): Promise<Response | void> {
     try {
       const { from_city, to_city } = req.query;
 
@@ -101,7 +101,7 @@ export class RateController {
       }
 
       const comparison = await RateService.getRateComparison(
-        req.user!.company_id,
+        req.user!.companyId,
         from_city as string,
         to_city as string
       );
@@ -120,7 +120,7 @@ export class RateController {
   }
 
   // Create rate
-  static async createRate(req: AuthRequest, res: Response) {
+  static async createRate(req: AuthRequest, res: Response): Promise<Response | void> {
     try {
       const { from_city, to_city, goods_type, rate_per_kg, min_charge } = req.body;
 
@@ -133,8 +133,8 @@ export class RateController {
 
       const rate = await RateService.createRate(
         { from_city, to_city, goods_type, rate_per_kg, min_charge },
-        req.user!.company_id,
-        req.user!.id
+        req.user!.companyId,
+        req.user!.userId
       );
 
       res.status(201).json({
@@ -151,7 +151,7 @@ export class RateController {
   }
 
   // Update rate
-  static async updateRate(req: AuthRequest, res: Response) {
+  static async updateRate(req: AuthRequest, res: Response): Promise<Response | void> {
     try {
       const { id } = req.params;
       const { from_city, to_city, goods_type, rate_per_kg, min_charge } = req.body;
@@ -159,7 +159,7 @@ export class RateController {
       const rate = await RateService.updateRate(
         id,
         { from_city, to_city, goods_type, rate_per_kg, min_charge },
-        req.user!.company_id
+        req.user!.companyId
       );
 
       if (!rate) {
@@ -183,10 +183,10 @@ export class RateController {
   }
 
   // Delete rate
-  static async deleteRate(req: AuthRequest, res: Response) {
+  static async deleteRate(req: AuthRequest, res: Response): Promise<Response | void> {
     try {
       const { id } = req.params;
-      const rate = await RateService.deleteRate(id, req.user!.company_id);
+      const rate = await RateService.deleteRate(id, req.user!.companyId);
 
       if (!rate) {
         return res.status(404).json({
@@ -212,7 +212,7 @@ export class RateController {
   static async getCustomerRates(req: AuthRequest, res: Response) {
     try {
       const { customer_id } = req.params;
-      const rates = await RateService.getCustomerRates(customer_id, req.user!.company_id);
+      const rates = await RateService.getCustomerRates(customer_id, req.user!.companyId);
 
       res.json({
         success: true,
@@ -228,7 +228,7 @@ export class RateController {
   }
 
   // Create customer rate
-  static async createCustomerRate(req: AuthRequest, res: Response) {
+  static async createCustomerRate(req: AuthRequest, res: Response): Promise<Response | void> {
     try {
       const { customer_id, from_city, to_city, goods_type, special_rate, min_charge } = req.body;
 
@@ -241,8 +241,8 @@ export class RateController {
 
       const rate = await RateService.createCustomerRate(
         { customer_id, from_city, to_city, goods_type, special_rate, min_charge },
-        req.user!.company_id,
-        req.user!.id
+        req.user!.companyId,
+        req.user!.userId
       );
 
       res.status(201).json({
@@ -259,7 +259,7 @@ export class RateController {
   }
 
   // Calculate rates
-  static async calculateRates(req: AuthRequest, res: Response) {
+  static async calculateRates(req: AuthRequest, res: Response): Promise<Response | void> {
     try {
       const { from_city, to_city, goods_type, weight, customer_id } = req.body;
 
@@ -272,7 +272,7 @@ export class RateController {
 
       const rates = await RateService.calculateRates(
         { from_city, to_city, goods_type, weight, customer_id },
-        req.user!.company_id
+        req.user!.companyId
       );
 
       res.json({
@@ -311,7 +311,7 @@ export class RateController {
         applied_rate,
         weight,
         total_amount,
-        req.user!.id
+        req.user!.userId
       );
 
       res.status(201).json({
@@ -347,7 +347,7 @@ export class RateController {
   }
 
   // Bulk upload rates
-  static async bulkUploadRates(req: AuthRequest, res: Response) {
+  static async bulkUploadRates(req: AuthRequest, res: Response): Promise<Response | void> {
     try {
       const { rates } = req.body;
 
@@ -360,8 +360,8 @@ export class RateController {
 
       const results = await RateService.bulkUploadRates(
         rates,
-        req.user!.company_id,
-        req.user!.id
+        req.user!.companyId,
+        req.user!.userId
       );
 
       res.json({
@@ -381,7 +381,7 @@ export class RateController {
   }
 
   // Copy rate
-  static async copyRate(req: AuthRequest, res: Response) {
+  static async copyRate(req: AuthRequest, res: Response): Promise<Response | void> {
     try {
       const { source_from, source_to, source_goods_type, dest_from, dest_to } = req.body;
 
@@ -398,8 +398,8 @@ export class RateController {
         source_goods_type,
         dest_from,
         dest_to,
-        req.user!.company_id,
-        req.user!.id
+        req.user!.companyId,
+        req.user!.userId
       );
 
       res.json({
@@ -418,7 +418,7 @@ export class RateController {
   // Get pending approvals
   static async getPendingApprovals(req: AuthRequest, res: Response) {
     try {
-      const approvals = await RateService.getPendingApprovals(req.user!.company_id);
+      const approvals = await RateService.getPendingApprovals(req.user!.companyId);
 
       res.json({
         success: true,
@@ -434,7 +434,7 @@ export class RateController {
   }
 
   // Approve/Reject rate
-  static async updateApprovalStatus(req: AuthRequest, res: Response) {
+  static async updateApprovalStatus(req: AuthRequest, res: Response): Promise<Response | void> {
     try {
       const { id } = req.params;
       const { status } = req.body;
@@ -449,7 +449,7 @@ export class RateController {
       const approval = await RateService.updateApprovalStatus(
         id,
         status,
-        req.user!.id
+        req.user!.userId
       );
 
       res.json({

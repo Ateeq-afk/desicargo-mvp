@@ -116,19 +116,21 @@ export const createCompanyWithTrial = async (req: Request, res: Response): Promi
       adminUser
     } = req.body;
 
-    // Verify OTP was completed
-    const otpCheck = await query(
-      `SELECT * FROM otp_verifications 
-       WHERE phone = $1 AND purpose = 'signup' AND is_verified = true
-       ORDER BY created_at DESC LIMIT 1`,
-      [phone]
-    );
+    // Verify OTP was completed (skip in development mode)
+    if (process.env.NODE_ENV !== 'development') {
+      const otpCheck = await query(
+        `SELECT * FROM otp_verifications 
+         WHERE phone = $1 AND purpose = 'signup' AND is_verified = true
+         ORDER BY created_at DESC LIMIT 1`,
+        [phone]
+      );
 
-    if (otpCheck.rows.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Please verify your phone number first'
-      });
+      if (otpCheck.rows.length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Please verify your phone number first'
+        });
+      }
     }
 
     // Start transaction

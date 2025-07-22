@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { GoodsService } from '../services/goods.service';
-import { AuthRequest } from '../middleware/auth';
+import { AuthRequest } from '../middleware/auth.middleware';
 
 export class GoodsController {
   // Get all goods
@@ -8,7 +8,7 @@ export class GoodsController {
     try {
       const { is_active } = req.query;
       const goods = await GoodsService.getGoods(
-        req.user!.company_id,
+        req.user!.companyId,
         is_active !== undefined ? is_active === 'true' : undefined
       );
 
@@ -29,13 +29,14 @@ export class GoodsController {
   static async getGoodsById(req: AuthRequest, res: Response) {
     try {
       const { id } = req.params;
-      const goods = await GoodsService.getGoodsById(id, req.user!.company_id);
+      const goods = await GoodsService.getGoodsById(id, req.user!.companyId);
 
       if (!goods) {
-        return res.status(404).json({
+        res.status(404).json({
           success: false,
           error: 'Goods not found'
         });
+        return;
       }
 
       res.json({
@@ -57,16 +58,17 @@ export class GoodsController {
       const { goods_name, goods_code, hsn_code, is_active } = req.body;
 
       if (!goods_name) {
-        return res.status(400).json({
+        res.status(400).json({
           success: false,
           error: 'Goods name is required'
         });
+        return;
       }
 
       const goods = await GoodsService.createGoods(
         { goods_name, goods_code, hsn_code, is_active },
-        req.user!.company_id,
-        req.user!.id
+        req.user!.companyId,
+        req.user!.userId
       );
 
       res.status(201).json({
@@ -91,14 +93,15 @@ export class GoodsController {
       const goods = await GoodsService.updateGoods(
         id,
         { goods_name, goods_code, hsn_code, is_active },
-        req.user!.company_id
+        req.user!.companyId
       );
 
       if (!goods) {
-        return res.status(404).json({
+        res.status(404).json({
           success: false,
           error: 'Goods not found'
         });
+        return;
       }
 
       res.json({
@@ -118,13 +121,14 @@ export class GoodsController {
   static async deleteGoods(req: AuthRequest, res: Response) {
     try {
       const { id } = req.params;
-      const goods = await GoodsService.deleteGoods(id, req.user!.company_id);
+      const goods = await GoodsService.deleteGoods(id, req.user!.companyId);
 
       if (!goods) {
-        return res.status(404).json({
+        res.status(404).json({
           success: false,
           error: 'Goods not found'
         });
+        return;
       }
 
       res.json({
@@ -146,13 +150,14 @@ export class GoodsController {
       const { q } = req.query;
       
       if (!q || typeof q !== 'string') {
-        return res.status(400).json({
+        res.status(400).json({
           success: false,
           error: 'Search query is required'
         });
+        return;
       }
 
-      const goods = await GoodsService.searchGoods(req.user!.company_id, q);
+      const goods = await GoodsService.searchGoods(req.user!.companyId, q);
 
       res.json({
         success: true,

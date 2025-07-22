@@ -5,7 +5,7 @@ import { AuthRequest } from '../middleware/auth.middleware';
 export const expenseController = {
   async getCategories(req: AuthRequest, res: Response) {
     try {
-      const companyId = req.user!.company_id;
+      const companyId = req.user!.companyId;
       const categories = await expenseService.getCategories(companyId);
       res.json(categories);
     } catch (error) {
@@ -16,8 +16,8 @@ export const expenseController = {
 
   async createExpense(req: AuthRequest, res: Response) {
     try {
-      const companyId = req.user!.company_id;
-      const userId = req.user!.id;
+      const companyId = req.user!.companyId;
+      const userId = req.user!.userId;
       
       const expense = await expenseService.createExpense({
         ...req.body,
@@ -34,7 +34,7 @@ export const expenseController = {
 
   async getExpenses(req: AuthRequest, res: Response) {
     try {
-      const companyId = req.user!.company_id;
+      const companyId = req.user!.companyId;
       
       const filter = {
         company_id: companyId,
@@ -57,7 +57,7 @@ export const expenseController = {
     }
   },
 
-  async updateExpense(req: AuthRequest, res: Response) {
+  async updateExpense(req: AuthRequest, res: Response): Promise<Response | void> {
     try {
       const { id } = req.params;
       const expense = await expenseService.updateExpense(id, req.body);
@@ -73,7 +73,7 @@ export const expenseController = {
     }
   },
 
-  async deleteExpense(req: AuthRequest, res: Response) {
+  async deleteExpense(req: AuthRequest, res: Response): Promise<Response | void> {
     try {
       const { id } = req.params;
       const deleted = await expenseService.deleteExpense(id);
@@ -100,7 +100,7 @@ export const expenseController = {
     }
   },
 
-  async getVehiclePL(req: AuthRequest, res: Response) {
+  async getVehiclePL(req: AuthRequest, res: Response): Promise<Response | void> {
     try {
       const vehicleId = req.query.vehicle_id as string;
       const fromDate = new Date(req.query.from_date as string);
@@ -120,7 +120,7 @@ export const expenseController = {
 
   async getExpenseSummary(req: AuthRequest, res: Response) {
     try {
-      const companyId = req.user!.company_id;
+      const companyId = req.user!.companyId;
       const fromDate = new Date(req.query.from_date as string || new Date().setMonth(new Date().getMonth() - 1));
       const toDate = new Date(req.query.to_date as string || new Date());
 
@@ -134,7 +134,7 @@ export const expenseController = {
 
   async createRecurringExpense(req: AuthRequest, res: Response) {
     try {
-      const companyId = req.user!.company_id;
+      const companyId = req.user!.companyId;
       
       const expense = await expenseService.createRecurringExpense({
         ...req.body,
@@ -148,9 +148,9 @@ export const expenseController = {
     }
   },
 
-  async processRecurringExpenses(req: AuthRequest, res: Response) {
+  async processRecurringExpenses(req: AuthRequest, res: Response): Promise<Response | void> {
     try {
-      const companyId = req.user!.company_id;
+      const companyId = req.user!.companyId;
       const { frequency } = req.body;
 
       if (!['daily', 'weekly', 'monthly'].includes(frequency)) {
