@@ -1,0 +1,68 @@
+### Test Consignment Booking API
+### You can use this file with REST Client extension in VS Code or any HTTP client
+
+### 1. Login to get token
+POST http://localhost:5001/api/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "admin123"
+}
+
+### Save the accessToken from response and use in Authorization header below
+
+### 2. Create a new consignment booking
+POST http://localhost:5001/api/consignments
+Content-Type: application/json
+Authorization: Bearer YOUR_ACCESS_TOKEN_HERE
+
+{
+  "from_branch_id": "b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+  "to_branch_id": "b1eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+  "consignor_name": "Rajesh Kumar",
+  "consignor_phone": "9876543210",
+  "consignor_address": "123, MG Road, Andheri East",
+  "consignor_gstin": "27AABCD1234E1Z5",
+  "consignee_name": "Amit Sharma",
+  "consignee_phone": "9876543211",
+  "consignee_address": "456, Nehru Place",
+  "consignee_pincode": "110019",
+  "goods_description": "Electronic Items",
+  "goods_value": 50000,
+  "no_of_packages": 5,
+  "actual_weight": 25.5,
+  "charged_weight": 26,
+  "freight_amount": 1500,
+  "hamali_charges": 100,
+  "door_delivery_charges": 200,
+  "loading_charges": 50,
+  "payment_type": "topay",
+  "delivery_type": "door"
+}
+
+### 3. Get consignment by CN number
+GET http://localhost:5001/api/consignments/MUM2025000001
+Authorization: Bearer YOUR_ACCESS_TOKEN_HERE
+
+### 4. List all consignments with filters
+GET http://localhost:5001/api/consignments?page=1&limit=10&status=booked
+Authorization: Bearer YOUR_ACCESS_TOKEN_HERE
+
+### 5. Update consignment status
+PUT http://localhost:5001/api/consignments/CONSIGNMENT_ID_HERE/status
+Content-Type: application/json
+Authorization: Bearer YOUR_ACCESS_TOKEN_HERE
+
+{
+  "status": "picked",
+  "remarks": "Picked up from customer location",
+  "branch_id": "b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11"
+}
+
+### 6. Get pending consignments for OGPL
+GET http://localhost:5001/api/consignments/pending/ogpl?branch_id=b0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11
+Authorization: Bearer YOUR_ACCESS_TOKEN_HERE
+
+### 7. Public tracking (no auth required)
+GET http://localhost:5001/api/consignments/track/MUM2025000001
