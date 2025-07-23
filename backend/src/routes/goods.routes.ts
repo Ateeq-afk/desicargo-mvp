@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import { GoodsController } from '../controllers/goods.controller';
 import { authenticate } from '../middleware/auth.middleware';
+import { requireTenant } from '../middleware/tenant.middleware';
 
 const router = Router();
 
-// All routes require authentication
+// All routes require authentication and tenant context
 router.use(authenticate);
+router.use(requireTenant);
 
 // Goods routes
 router.get('/', GoodsController.getGoods);

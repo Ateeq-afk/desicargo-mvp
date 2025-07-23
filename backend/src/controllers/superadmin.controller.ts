@@ -1,10 +1,17 @@
 import { Request, Response } from 'express';
-import pool from '../config/database';
-import { AuthRequest } from '../types';
+import { pool } from '../config/database';
+
+interface AuthRequest extends Request {
+  user?: {
+    id: string;
+    role: string;
+    userId?: string;
+  };
+}
 
 export const superAdminController = {
   // Get all tenants with statistics
-  async getAllTenants(req: AuthRequest, res: Response) {
+  async getAllTenants(req: AuthRequest, res: Response): Promise<void> {
     try {
       const tenantsQuery = `
         SELECT 
@@ -34,7 +41,7 @@ export const superAdminController = {
   },
 
   // Get specific tenant details
-  async getTenantDetails(req: AuthRequest, res: Response) {
+  async getTenantDetails(req: AuthRequest, res: Response): Promise<void> {
     try {
       const { id } = req.params;
       
@@ -59,7 +66,8 @@ export const superAdminController = {
       const tenantResult = await pool.query(tenantQuery, [id]);
       
       if (tenantResult.rows.length === 0) {
-        return res.status(404).json({ error: 'Tenant not found' });
+        res.status(404).json({ error: 'Tenant not found' });
+        return;
       }
       
       // Get recent activity
@@ -102,7 +110,7 @@ export const superAdminController = {
   },
 
   // Update tenant status
-  async updateTenant(req: AuthRequest, res: Response) {
+  async updateTenant(req: AuthRequest, res: Response): Promise<void> {
     try {
       const { id } = req.params;
       const { is_active, subscription_plan, subscription_ends_at } = req.body;
@@ -126,7 +134,8 @@ export const superAdminController = {
       ]);
       
       if (result.rows.length === 0) {
-        return res.status(404).json({ error: 'Tenant not found' });
+        res.status(404).json({ error: 'Tenant not found' });
+        return;
       }
       
       // Log the action
@@ -145,7 +154,7 @@ export const superAdminController = {
   },
 
   // Soft delete tenant
-  async deleteTenant(req: AuthRequest, res: Response) {
+  async deleteTenant(req: AuthRequest, res: Response): Promise<void> {
     try {
       const { id } = req.params;
       
@@ -161,7 +170,8 @@ export const superAdminController = {
       const result = await pool.query(deleteQuery, [id]);
       
       if (result.rows.length === 0) {
-        return res.status(404).json({ error: 'Tenant not found' });
+        res.status(404).json({ error: 'Tenant not found' });
+        return;
       }
       
       // Log the action
@@ -178,7 +188,7 @@ export const superAdminController = {
   },
 
   // Login as tenant (impersonation)
-  async loginAsTenant(req: AuthRequest, res: Response) {
+  async loginAsTenant(req: AuthRequest, res: Response): Promise<void> {
     try {
       const { id } = req.params;
       
@@ -187,7 +197,8 @@ export const superAdminController = {
       const tenantResult = await pool.query(tenantQuery, [id]);
       
       if (tenantResult.rows.length === 0) {
-        return res.status(404).json({ error: 'Active tenant not found' });
+        res.status(404).json({ error: 'Active tenant not found' });
+        return;
       }
       
       // Get first admin user of the tenant
@@ -200,7 +211,8 @@ export const superAdminController = {
       const userResult = await pool.query(userQuery, [id]);
       
       if (userResult.rows.length === 0) {
-        return res.status(404).json({ error: 'No admin user found for tenant' });
+        res.status(404).json({ error: 'No admin user found for tenant' });
+        return;
       }
       
       // Log the impersonation
@@ -243,7 +255,7 @@ export const superAdminController = {
   },
 
   // Get platform statistics
-  async getPlatformStats(req: AuthRequest, res: Response) {
+  async getPlatformStats(req: AuthRequest, res: Response): Promise<void> {
     try {
       const statsQuery = `
         SELECT 
@@ -301,7 +313,7 @@ export const superAdminController = {
   },
 
   // Get revenue analytics
-  async getRevenueAnalytics(req: AuthRequest, res: Response) {
+  async getRevenueAnalytics(req: AuthRequest, res: Response): Promise<void> {
     try {
       const { period = '30' } = req.query;
       
@@ -331,7 +343,7 @@ export const superAdminController = {
   },
 
   // Get all users across tenants
-  async getAllUsers(req: AuthRequest, res: Response) {
+  async getAllUsers(req: AuthRequest, res: Response): Promise<void> {
     try {
       const { search, tenant_id, role } = req.query;
       
@@ -383,7 +395,7 @@ export const superAdminController = {
   },
 
   // Send announcement to all users
-  async sendAnnouncement(req: AuthRequest, res: Response) {
+  async sendAnnouncement(req: AuthRequest, res: Response): Promise<void> {
     try {
       const { title, message, target_tenants } = req.body;
       
@@ -406,7 +418,7 @@ export const superAdminController = {
   },
 
   // Get activity logs
-  async getActivityLogs(req: AuthRequest, res: Response) {
+  async getActivityLogs(req: AuthRequest, res: Response): Promise<void> {
     try {
       const { limit = 100, offset = 0 } = req.query;
       
@@ -435,8 +447,231 @@ export const superAdminController = {
     }
   },
 
+  // Create new tenant with automated setup
+  async createTenant(req: AuthRequest, res: Response): Promise<void> {
+    const client = await pool.connect();
+    
+    try {
+      await client.query('BEGIN');
+      
+      const {
+        tenantCode,
+        tenantName,
+        email,
+        phone,
+        address,
+        companyName,
+        gstin,
+        adminName,
+        adminEmail,
+        adminPhone,
+        adminUsername,
+        subscriptionPlan,
+        billingCycle,
+        branchName,
+        branchAddress,
+        branchCity,
+        branchState,
+        branchPincode
+      } = req.body;
+
+      // Validate required fields
+      if (!tenantCode || !tenantName || !email || !adminName || !adminEmail || !adminUsername) {
+        await client.query('ROLLBACK');
+        res.status(400).json({ error: 'Missing required fields' });
+        return;
+      }
+
+      // Check if tenant code already exists
+      const existingTenant = await client.query('SELECT id FROM tenants WHERE code = $1', [tenantCode]);
+      if (existingTenant.rows.length > 0) {
+        await client.query('ROLLBACK');
+        res.status(400).json({ error: 'Tenant code already exists' });
+        return;
+      }
+
+      // Check if admin username already exists
+      const existingUser = await client.query('SELECT id FROM users WHERE username = $1', [adminUsername]);
+      if (existingUser.rows.length > 0) {
+        await client.query('ROLLBACK');
+        res.status(400).json({ error: 'Admin username already exists' });
+        return;
+      }
+
+      // Calculate subscription dates
+      const subscriptionStarts = new Date();
+      const subscriptionEnds = new Date();
+      if (billingCycle === 'yearly') {
+        subscriptionEnds.setFullYear(subscriptionEnds.getFullYear() + 1);
+      } else {
+        subscriptionEnds.setMonth(subscriptionEnds.getMonth() + 1);
+      }
+
+      const trialEnds = new Date();
+      trialEnds.setDate(trialEnds.getDate() + 30); // 30-day trial
+
+      // 1. Create tenant
+      const tenantQuery = `
+        INSERT INTO tenants (
+          code, name, email, phone, address, is_active, subscription_plan, 
+          subscription_starts_at, subscription_ends_at, trial_ends_at,
+          settings, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        RETURNING *
+      `;
+      
+      const tenantResult = await client.query(tenantQuery, [
+        tenantCode,
+        tenantName,
+        email,
+        phone,
+        address,
+        subscriptionPlan,
+        subscriptionStarts,
+        subscriptionEnds,
+        trialEnds,
+        JSON.stringify({
+          billing_cycle: billingCycle,
+          features_enabled: subscriptionPlan === 'enterprise' ? ['all'] : ['basic'],
+          branding: {
+            primary_color: '#3b82f6',
+            logo_url: ''
+          }
+        })
+      ]);
+      
+      const tenant = tenantResult.rows[0];
+
+      // 2. Create company
+      const companyQuery = `
+        INSERT INTO companies (
+          tenant_id, name, email, phone, address, gstin, is_active,
+          trial_ends_at, subscription_ends_at, onboarding_completed, onboarding_steps,
+          created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, true, $7, $8, false, $9, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        RETURNING *
+      `;
+      
+      const companyResult = await client.query(companyQuery, [
+        tenant.id,
+        companyName || tenantName,
+        adminEmail,
+        phone,
+        address,
+        gstin || null,
+        trialEnds,
+        subscriptionEnds,
+        JSON.stringify({
+          tenant_setup: true,
+          admin_created: false,
+          branch_setup: false,
+          initial_configuration: false
+        })
+      ]);
+      
+      const company = companyResult.rows[0];
+
+      // 3. Create head office branch
+      const branchQuery = `
+        INSERT INTO branches (
+          tenant_id, company_id, name, address, city, state, pincode, 
+          phone, email, is_active, is_head_office, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true, true, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        RETURNING *
+      `;
+      
+      const branchResult = await client.query(branchQuery, [
+        tenant.id,
+        company.id,
+        branchName || 'Head Office',
+        branchAddress || address,
+        branchCity || 'Mumbai',
+        branchState || 'Maharashtra', 
+        branchPincode || '400001',
+        phone,
+        adminEmail,
+        true,
+        true
+      ]);
+      
+      const branch = branchResult.rows[0];
+
+      // 4. Generate secure password for admin
+      const bcrypt = require('bcrypt');
+      const defaultPassword = 'Admin@123'; // This should be sent via email in production
+      const hashedPassword = await bcrypt.hash(defaultPassword, 12);
+
+      // 5. Create admin user
+      const adminUserQuery = `
+        INSERT INTO users (
+          tenant_id, company_id, branch_id, username, email, password, 
+          full_name, phone, role, is_active, last_login, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'admin', true, null, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        RETURNING *
+      `;
+      
+      const adminUserResult = await client.query(adminUserQuery, [
+        tenant.id,
+        company.id,
+        branch.id,
+        adminUsername,
+        adminEmail,
+        hashedPassword,
+        adminName,
+        adminPhone || phone,
+        'admin'
+      ]);
+
+      const adminUser = adminUserResult.rows[0];
+
+      // 6. Update company onboarding status
+      await client.query(
+        'UPDATE companies SET onboarding_steps = $1 WHERE id = $2',
+        [JSON.stringify({
+          tenant_setup: true,
+          admin_created: true,
+          branch_setup: true,
+          initial_configuration: true
+        }), company.id]
+      );
+
+      await client.query('COMMIT');
+
+      // Log the action
+      await logSuperAdminAction(req, 'CREATE_TENANT', tenant.id, {
+        tenant_code: tenantCode,
+        tenant_name: tenantName,
+        subscription_plan: subscriptionPlan,
+        admin_username: adminUsername
+      });
+
+      res.status(201).json({
+        success: true,
+        data: {
+          tenant: tenant,
+          company: company,
+          branch: branch,
+          admin: { ...adminUser, password: undefined }, // Never return password
+          credentials: {
+            username: adminUsername,
+            password: defaultPassword, // In production, this should be sent via email
+            login_url: `https://${tenantCode}.desicargo.in`
+          }
+        },
+        message: 'Tenant created successfully. Login credentials have been sent to the admin email.'
+      });
+
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Error creating tenant:', error);
+      res.status(500).json({ error: 'Failed to create tenant' });
+    } finally {
+      client.release();
+    }
+  },
+
   // System health check
-  async getSystemHealth(req: AuthRequest, res: Response) {
+  async getSystemHealth(req: AuthRequest, res: Response): Promise<void> {
     try {
       // Check database connection
       const dbCheck = await pool.query('SELECT 1');

@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.middleware';
+import { requireTenant } from '../middleware/tenant.middleware';
 import {
   verifyWebhook,
   handleIncomingMessage,
@@ -14,9 +15,9 @@ router.get('/webhook', verifyWebhook);
 router.post('/webhook', handleIncomingMessage);
 
 // Send manual WhatsApp message (for testing/admin)
-router.post('/send', authenticate, sendManualMessage);
+router.post('/send', authenticate, requireTenant, sendManualMessage);
 
 // Get chatbot analytics
-router.get('/analytics', authenticate, getChatbotAnalytics);
+router.get('/analytics', authenticate, requireTenant, getChatbotAnalytics);
 
 export default router;

@@ -26,10 +26,16 @@ import documentRoutes from './routes/document.routes';
 import whatsappRoutes from './routes/whatsapp.routes';
 import customerRoutes from './routes/customer.routes';
 import goodsRoutes from './routes/goods.routes';
+import enhancedGoodsRoutes from './routes/enhancedGoods.routes';
+import goodsCategoryRoutes from './routes/goodsCategory.routes';
+import packagingTypeRoutes from './routes/packagingType.routes';
 import rateRoutes from './routes/rate.routes';
 import expenseRoutes from './routes/expenseRoutes';
 import superAdminRoutes from './routes/superadmin.routes';
 import bookingEnhancementRoutes from './routes/bookingEnhancement.routes';
+import trackingRoutes from './routes/tracking.routes';
+import userRoutes from './routes/user.routes';
+import branchRoutes from './routes/branch.routes';
 
 // Import middleware
 import { errorHandler } from './middleware/error.middleware';
@@ -55,7 +61,13 @@ const io = new Server(httpServer, {
 // Middleware
 app.use(helmet());
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+  origin: [
+    process.env.CORS_ORIGIN || 'http://localhost:3000',
+    'http://admin.localhost:3000',
+    'http://admin.desicargo.in',
+    /^https?:\/\/.*\.localhost:3000$/,
+    /^https?:\/\/.*\.desicargo\.in$/
+  ],
   credentials: true
 }));
 app.use(compression());
@@ -76,7 +88,6 @@ app.get('/api/health', (_req, res) => {
 });
 
 // Public routes (no tenant middleware required)
-app.use('/api/tenants', tenantRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/onboarding', onboardingRoutes);
 
@@ -87,10 +98,17 @@ app.use('/api/superadmin', superAdminRoutes);
 app.use(tenantMiddleware);
 app.use(releaseTenantConnection);
 
+// Tenant routes (mix of public and protected)
+app.use('/api/tenants', tenantRoutes);
+
 // Protected routes (require tenant context)
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/masters', masterRoutes);
-app.use('/api/customers', customerRoutes);
+app.use('/api/customers', (req, res, next) => {
+  console.log(`Customer route accessed: ${req.method} ${req.path}`);
+  console.log('Headers:', req.headers);
+  next();
+}, customerRoutes);
 app.use('/api/consignments', consignmentRoutes);
 app.use('/api/ogpl', ogplRoutes);
 app.use('/api/delivery-runs', deliveryRoutes);
@@ -99,9 +117,15 @@ app.use('/api/reports', reportRoutes);
 app.use('/api/documents', documentRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/goods', goodsRoutes);
+app.use('/api/v2/goods', enhancedGoodsRoutes);
+app.use('/api/goods/categories', goodsCategoryRoutes);
+app.use('/api/goods/packaging', packagingTypeRoutes);
 app.use('/api/rates', rateRoutes);
 app.use('/api/expenses', expenseRoutes);
 app.use('/api/booking-enhancements', bookingEnhancementRoutes);
+app.use('/api/tracking', trackingRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/branches', branchRoutes);
 
 // Error handling
 app.use(notFound);

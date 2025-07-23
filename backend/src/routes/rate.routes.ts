@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import { RateController } from '../controllers/rate.controller';
 import { authenticate } from '../middleware/auth.middleware';
+import { requireTenant } from '../middleware/tenant.middleware';
 
 const router = Router();
 
-// All routes require authentication
+// All routes require authentication and tenant context
 router.use(authenticate);
+router.use(requireTenant);
 
 // Rate master routes
 router.get('/', RateController.getRates);
@@ -18,7 +20,9 @@ router.delete('/:id', RateController.deleteRate);
 
 // Customer rate routes
 router.get('/customer/:customer_id', RateController.getCustomerRates);
+router.get('/customer/:customer_id/rates', RateController.getCustomerRatesWithFallback);
 router.post('/customer', RateController.createCustomerRate);
+router.post('/customer/calculate', RateController.calculateFreightForCustomer);
 
 // Rate calculation and history
 router.post('/calculate', RateController.calculateRates);

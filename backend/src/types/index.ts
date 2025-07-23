@@ -1,5 +1,7 @@
 // Type definitions for the application
 
+import { Request } from 'express';
+
 export interface User {
   id: string;
   company_id: string;
@@ -184,11 +186,14 @@ export interface JwtPayload {
   tenantCode?: string;
 }
 
-export interface AuthRequest extends Express.Request {
+export interface AuthRequest extends Request {
   user?: JwtPayload;
+  userId?: string;
 }
 
 export interface TenantAuthRequest extends AuthRequest {
   tenantId?: string;
   tenantCode?: string;
+  userRole?: string;
+  branchId?: string;
 }

@@ -445,7 +445,7 @@ export const getTrialStatus = async (req: Request, res: Response): Promise<Respo
     // Get usage stats
     const usageResult = await query(
       `SELECT 
-        COUNT(*) FILTER (WHERE created_at >= date_trunc('month', CURRENT_DATE)) as monthly_bookings,
+        COUNT(*) FILTER (WHERE c.created_at >= date_trunc('month', CURRENT_DATE)) as monthly_bookings,
         COUNT(DISTINCT u.id) as total_users,
         COUNT(DISTINCT b.id) as total_branches
        FROM consignments c

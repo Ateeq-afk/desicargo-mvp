@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { body, param, query } from 'express-validator';
 import { authenticate } from '../middleware/auth.middleware';
+import { requireTenant } from '../middleware/tenant.middleware';
 import {
   createOGPL,
   loadConsignments,
@@ -13,8 +14,9 @@ import {
 
 const router = Router();
 
-// All routes require authentication
+// All routes require authentication and tenant context
 router.use(authenticate);
+router.use(requireTenant);
 
 // Get available consignments for loading
 router.get('/available-consignments', 

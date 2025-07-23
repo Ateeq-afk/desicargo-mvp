@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import { BookingEnhancementController } from '../controllers/bookingEnhancement.controller';
 import { authenticate } from '../middleware/auth.middleware';
+import { requireTenant } from '../middleware/tenant.middleware';
 
 const router = Router();
 
-// All routes require authentication
+// All routes require authentication and tenant context
 router.use(authenticate);
+router.use(requireTenant);
 
 // Booking validation endpoints
 router.get('/check-duplicate', BookingEnhancementController.checkDuplicate);

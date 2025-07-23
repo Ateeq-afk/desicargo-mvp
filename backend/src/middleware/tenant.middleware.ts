@@ -7,6 +7,7 @@ interface TenantRequest extends Request {
   tenantCode?: string;
   userId?: string;
   userRole?: string;
+  branchId?: string;
 }
 
 interface JwtPayload {
@@ -14,6 +15,7 @@ interface JwtPayload {
   tenantId: string;
   tenantCode?: string;
   role?: string;
+  branchId?: string;
 }
 
 export const tenantMiddleware = async (
@@ -43,9 +45,12 @@ export const tenantMiddleware = async (
         tenantId = decoded.tenantId;
         req.userId = decoded.userId;
         req.userRole = decoded.role;
+        req.branchId = decoded.branchId;
         
         // If we got tenantCode from subdomain, verify it matches the token
-        if (tenantCode && decoded.tenantCode && tenantCode !== decoded.tenantCode) {
+        // Skip this check for localhost/development
+        if (tenantCode && decoded.tenantCode && tenantCode !== decoded.tenantCode && 
+            !host?.includes('localhost') && process.env.NODE_ENV !== 'development') {
           return res.status(403).json({
             success: false,
             message: 'Tenant mismatch between subdomain and authentication'
@@ -69,7 +74,7 @@ export const tenantMiddleware = async (
     // 5. If we have tenantCode but not tenantId, look it up
     if (tenantCode && !tenantId) {
       const result = await pool.query(
-        'SELECT id, is_active FROM tenants WHERE tenant_code = $1',
+        'SELECT id, is_active FROM tenants WHERE code = $1',
         [tenantCode]
       );
       
@@ -87,20 +92,21 @@ export const tenantMiddleware = async (
 
     // 6. For development/testing, use default tenant if no tenant found
     if (!tenantId && process.env.NODE_ENV === 'development') {
-      // Use demo tenant for development
-      const demoResult = await pool.query(
-        'SELECT id FROM tenants WHERE tenant_code = $1',
-        ['demo']
+      // Use default tenant for development
+      const defaultResult = await pool.query(
+        'SELECT id FROM tenants WHERE code = $1',
+        ['default']
       );
-      if (demoResult.rows.length > 0) {
-        tenantId = demoResult.rows[0].id;
-        tenantCode = 'demo';
+      if (defaultResult.rows.length > 0) {
+        tenantId = defaultResult.rows[0].id;
+        tenantCode = 'default';
       }
     }
 
     // 7. Validate tenant is required for this route
     const publicPaths = [
       '/api/tenants/register',
+      '/api/tenants/', // Public route to get tenant info by code
       '/api/auth/login',
       '/api/health',
       '/api/public',
@@ -109,7 +115,8 @@ export const tenantMiddleware = async (
       '/api/onboarding/signup'
     ];
     
-    const isPublicPath = publicPaths.some(path => req.path.startsWith(path));
+    const isPublicPath = publicPaths.some(path => req.path.startsWith(path)) ||
+      /^\/api\/tenants\/[a-z0-9-]+$/.test(req.path); // Allow GET /api/tenants/:code
     
     if (!tenantId && !isPublicPath) {
       return res.status(400).json({
@@ -122,7 +129,25 @@ export const tenantMiddleware = async (
     if (tenantId) {
       const client = await pool.connect();
       try {
-        await client.query('SELECT set_config($1, $2, true)', ['app.current_tenant', tenantId]);
+        // Set tenant code for RLS policies (they expect the code, not UUID)
+        if (tenantCode) {
+          await client.query('SELECT set_config($1, $2, true)', ['app.current_tenant', tenantCode]);
+        }
+        
+        // Set current user ID for RLS policies (if available from JWT)
+        if (req.userId) {
+          await client.query('SELECT set_config($1, $2, true)', ['app.current_user_id', req.userId]);
+        }
+        
+        // Set current branch ID for RLS policies (if available from JWT)
+        if (req.branchId) {
+          await client.query('SELECT set_config($1, $2, true)', ['app.current_branch_id', req.branchId]);
+        }
+        
+        // Set current user role for RLS policies
+        if (req.userRole) {
+          await client.query('SELECT set_config($1, $2, true)', ['app.current_user_role', req.userRole]);
+        }
         
         // Attach tenant info to request
         req.tenantId = tenantId;

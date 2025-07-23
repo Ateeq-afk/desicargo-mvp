@@ -1,7 +1,134 @@
 import { Request, Response } from 'express';
-import { pool } from '../config/database';
+import { pool, queryWithTenant } from '../config/database';
 import { AuthRequest } from '../middleware/auth.middleware';
+import { TenantAuthRequest } from '../types';
 import { sendPaymentReminder } from '../services/whatsapp.service';
+
+// Get Customers for Billing
+export const getCustomersForBilling = async (req: TenantAuthRequest, res: Response): Promise<void> => {
+  try {
+    const { search = '', limit = 20, payment_type = 'TBB' } = req.query;
+
+    let whereClause = `WHERE c.tenant_id = $1 AND c.is_active = true`;
+    const params: any[] = [req.tenantId!];
+    let paramIndex = 2;
+
+    // Filter by payment type if specified
+    if (payment_type && payment_type !== 'ALL') {
+      whereClause += ` AND (c.customer_type = $${paramIndex} OR c.payment_mode = $${paramIndex})`;
+      params.push(String(payment_type).toLowerCase());
+      paramIndex++;
+    }
+
+    // Add search functionality
+    if (search && String(search).length >= 2) {
+      whereClause += ` AND (c.name ILIKE $${paramIndex} OR c.phone ILIKE $${paramIndex} OR c.gstin ILIKE $${paramIndex})`;
+      params.push(`%${search}%`);
+      paramIndex++;
+    }
+
+    const customers = await queryWithTenant(
+      `SELECT 
+        c.id, c.name, c.phone, c.email, c.address, c.city, c.state,
+        c.gstin, c.customer_type, c.credit_limit, c.credit_days,
+        c.current_outstanding, c.payment_mode,
+        COALESCE(c.total_bookings, 0) as total_bookings,
+        COALESCE(c.total_business_value, 0) as total_business_value,
+        c.last_booking_date,
+        -- Credit utilization percentage
+        CASE 
+          WHEN c.credit_limit > 0 THEN ROUND((c.current_outstanding / c.credit_limit * 100)::numeric, 2)
+          ELSE 0 
+        END as credit_utilization_pct,
+        -- Available credit
+        CASE 
+          WHEN c.credit_limit > c.current_outstanding THEN c.credit_limit - c.current_outstanding
+          ELSE 0 
+        END as available_credit
+      FROM customers c
+      ${whereClause}
+      ORDER BY 
+        CASE WHEN c.name ILIKE $1 THEN 1
+             WHEN c.phone ILIKE $1 THEN 2
+             ELSE 3 END,
+        c.total_bookings DESC, c.name
+      LIMIT $${paramIndex}`,
+      [...params, Number(limit)],
+      req.tenantId!
+    );
+
+    res.json({
+      success: true,
+      data: customers.rows
+    });
+  } catch (error) {
+    console.error('Error fetching customers for billing:', error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to fetch customers for billing'
+    });
+  }
+};
+
+// Check Customer Credit Limit
+export const checkCustomerCreditLimit = async (req: TenantAuthRequest, res: Response): Promise<Response> => {
+  try {
+    const { customer_id } = req.params;
+    const { booking_amount = 0 } = req.query;
+
+    const customer = await queryWithTenant(
+      `SELECT 
+        id, name, credit_limit, current_outstanding, credit_days,
+        CASE 
+          WHEN credit_limit > 0 THEN credit_limit - current_outstanding
+          ELSE 999999 
+        END as available_credit,
+        CASE 
+          WHEN credit_limit > 0 THEN ROUND((current_outstanding / credit_limit * 100)::numeric, 2)
+          ELSE 0 
+        END as credit_utilization_pct
+      FROM customers 
+      WHERE id = $1 AND tenant_id = $2 AND is_active = true`,
+      [customer_id, req.tenantId!],
+      req.tenantId!
+    );
+
+    if (!customer.rows[0]) {
+      return res.status(404).json({
+        success: false,
+        error: 'Customer not found'
+      });
+    }
+
+    const customerData = customer.rows[0];
+    const requestedAmount = Number(booking_amount);
+    const availableCredit = Number(customerData.available_credit);
+    const isWithinLimit = availableCredit >= requestedAmount;
+
+    return res.json({
+      success: true,
+      data: {
+        customer: customerData,
+        requested_amount: requestedAmount,
+        available_credit: availableCredit,
+        is_within_limit: isWithinLimit,
+        credit_check: {
+          status: isWithinLimit ? 'approved' : 'exceeded',
+          message: isWithinLimit 
+            ? 'Credit limit check passed'
+            : `Credit limit exceeded. Available: ₹${availableCredit.toFixed(2)}, Requested: ₹${requestedAmount.toFixed(2)}`,
+          exceeds_by: isWithinLimit ? 0 : requestedAmount - availableCredit
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error checking customer credit limit:', error);
+    return res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to check customer credit limit'
+    });
+  }
+};
 
 // Generate Invoice Number
 const generateInvoiceNumber = async (branchId: string): Promise<string> => {
@@ -67,10 +194,12 @@ export const generateInvoice = async (req: AuthRequest, res: Response): Promise<
     
     const effectiveBranchId = branch_id || req.user?.branchId;
     
-    // Get customer details
-    const customerResult = await client.query(
-      'SELECT * FROM customers WHERE id = $1 AND customer_type = $2',
-      [customer_id, 'tbb']
+    // Get customer details with tenant isolation
+    const customerResult = await queryWithTenant(
+      'SELECT * FROM customers WHERE id = $1 AND (customer_type = $2 OR payment_type = $2) AND tenant_id = $3',
+      [customer_id, 'tbb', (req as TenantAuthRequest).tenantId!],
+      (req as TenantAuthRequest).tenantId!,
+      req.user?.userId
     );
     
     if (!customerResult.rows[0]) {

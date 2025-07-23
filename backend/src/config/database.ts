@@ -79,19 +79,36 @@ export const withTransaction = async (callback: (client: any) => Promise<any>): 
 };
 
 // Set tenant context for RLS
-export const setTenantContext = async (client: PoolClient, tenantId: string): Promise<void> => {
-  await client.query('SELECT set_config($1, $2, true)', ['app.current_tenant', tenantId]);
+export const setTenantContext = async (client: PoolClient, tenantIdOrCode: string): Promise<void> => {
+  // Check if it's a UUID or a code
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(tenantIdOrCode);
+  
+  if (isUuid) {
+    // If it's a UUID, get the tenant code
+    const result = await client.query('SELECT code FROM tenants WHERE id = $1', [tenantIdOrCode]);
+    if (result.rows.length > 0) {
+      await client.query('SELECT set_config($1, $2, true)', ['app.current_tenant', result.rows[0].code]);
+    }
+  } else {
+    // If it's already a code, use it directly
+    await client.query('SELECT set_config($1, $2, true)', ['app.current_tenant', tenantIdOrCode]);
+  }
 };
 
 // Query with tenant context
 export const queryWithTenant = async (
   text: string, 
   params: any[], 
-  tenantId: string
+  tenantId: string,
+  userId?: string
 ): Promise<any> => {
   const client = await pool.connect();
   try {
     await setTenantContext(client, tenantId);
+    // Also set user context if provided
+    if (userId) {
+      await client.query('SELECT set_config($1, $2, true)', ['app.current_user_id', userId]);
+    }
     const result = await client.query(text, params);
     return result;
   } finally {

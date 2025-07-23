@@ -1,10 +1,10 @@
 import { Request, Response } from 'express';
 import { pool, queryWithTenant } from '../config/database';
-import { AuthRequest } from '../types';
+import { TenantAuthRequest } from '../types';
 
 export class BookingEnhancementController {
   // Check for duplicate bookings
-  static async checkDuplicate(req: AuthRequest, res: Response): Promise<Response | void> {
+  static async checkDuplicate(req: TenantAuthRequest, res: Response): Promise<void> {
     try {
       const { customer_id, consignee_phone, to_city } = req.query;
       const tenantId = req.tenantId!;
@@ -19,10 +19,7 @@ export class BookingEnhancementController {
         tenantId
       );
 
-      res.json({
-        success: true,
-        data: result.rows[0] || null
-      });
+      res.json(result.rows[0] || null);
     } catch (error) {
       console.error('Error checking duplicate booking:', error);
       res.status(500).json({
@@ -33,7 +30,7 @@ export class BookingEnhancementController {
   }
 
   // Get customer booking history
-  static async getCustomerHistory(req: AuthRequest, res: Response): Promise<Response | void> {
+  static async getCustomerHistory(req: TenantAuthRequest, res: Response): Promise<void> {
     try {
       const { customerId } = req.params;
       const { limit = 5 } = req.query;
@@ -49,10 +46,7 @@ export class BookingEnhancementController {
         tenantId
       );
 
-      res.json({
-        success: true,
-        data: result.rows
-      });
+      res.json(result.rows);
     } catch (error) {
       console.error('Error fetching customer history:', error);
       res.status(500).json({
@@ -63,7 +57,7 @@ export class BookingEnhancementController {
   }
 
   // Get customer preferences
-  static async getCustomerPreferences(req: AuthRequest, res: Response): Promise<Response | void> {
+  static async getCustomerPreferences(req: TenantAuthRequest, res: Response): Promise<void> {
     try {
       const { customerId } = req.params;
       const tenantId = req.tenantId!;
@@ -79,10 +73,7 @@ export class BookingEnhancementController {
         tenantId
       );
 
-      res.json({
-        success: true,
-        data: result.rows[0] || null
-      });
+      res.json(result.rows[0] || null);
     } catch (error) {
       console.error('Error fetching preferences:', error);
       res.status(500).json({
@@ -93,7 +84,7 @@ export class BookingEnhancementController {
   }
 
   // Update customer preferences based on booking
-  static async updatePreferences(req: AuthRequest, res: Response): Promise<Response | void> {
+  static async updatePreferences(req: TenantAuthRequest, res: Response): Promise<void> {
     try {
       const { customerId } = req.params;
       const { destination, goods_type, payment_type } = req.body;
@@ -152,7 +143,7 @@ export class BookingEnhancementController {
   }
 
   // Get customer credit status
-  static async getCreditStatus(req: AuthRequest, res: Response): Promise<Response | void> {
+  static async getCreditStatus(req: TenantAuthRequest, res: Response): Promise<void> {
     try {
       const { customerId } = req.params;
       const tenantId = req.tenantId!;
@@ -178,10 +169,7 @@ export class BookingEnhancementController {
         tenantId
       );
 
-      res.json({
-        success: true,
-        data: result.rows[0] || { credit_limit: 0, current_outstanding: 0 }
-      });
+      res.json(result.rows[0] || { credit_limit: 0, current_outstanding: 0 });
     } catch (error) {
       console.error('Error fetching credit status:', error);
       res.status(500).json({
@@ -192,7 +180,7 @@ export class BookingEnhancementController {
   }
 
   // Get minimum charge for route
-  static async getMinimumCharge(req: AuthRequest, res: Response): Promise<Response | void> {
+  static async getMinimumCharge(req: TenantAuthRequest, res: Response): Promise<void> {
     try {
       const { from_city, to_city } = req.query;
       const tenantId = req.tenantId!;
@@ -212,10 +200,7 @@ export class BookingEnhancementController {
         tenantId
       );
 
-      res.json({
-        success: true,
-        data: { minimum_charge: result.rows[0]?.minimum_charge || 0 }
-      });
+      res.json({ minimum_charge: result.rows[0]?.minimum_charge || 0 });
     } catch (error) {
       console.error('Error fetching minimum charge:', error);
       res.status(500).json({
@@ -226,19 +211,22 @@ export class BookingEnhancementController {
   }
 
   // Save booking draft
-  static async saveDraft(req: AuthRequest, res: Response): Promise<Response | void> {
+  static async saveDraft(req: TenantAuthRequest, res: Response): Promise<void> {
     try {
       const { draft_data } = req.body;
       const tenantId = req.tenantId!;
-      const userId = req.userId!;
+      const userId = req.user?.userId!;
+
+      // First, delete any existing drafts for this user
+      await queryWithTenant(
+        'DELETE FROM booking_drafts WHERE tenant_id = $1 AND user_id = $2',
+        [tenantId, userId],
+        tenantId
+      );
 
       const query = `
         INSERT INTO booking_drafts (tenant_id, user_id, draft_data)
         VALUES ($1, $2, $3)
-        ON CONFLICT (tenant_id, user_id) 
-        DO UPDATE SET 
-          draft_data = $3,
-          updated_at = CURRENT_TIMESTAMP
         RETURNING id
       `;
 
@@ -262,10 +250,10 @@ export class BookingEnhancementController {
   }
 
   // Load latest draft
-  static async loadDraft(req: AuthRequest, res: Response): Promise<Response | void> {
+  static async loadDraft(req: TenantAuthRequest, res: Response): Promise<void> {
     try {
       const tenantId = req.tenantId!;
-      const userId = req.userId!;
+      const userId = req.user?.userId!;
 
       const query = `
         SELECT draft_data 
@@ -297,7 +285,7 @@ export class BookingEnhancementController {
   }
 
   // Get finance summary for booking
-  static async getFinanceSummary(req: AuthRequest, res: Response): Promise<Response | void> {
+  static async getFinanceSummary(req: TenantAuthRequest, res: Response): Promise<void> {
     try {
       const tenantId = req.tenantId!;
 
@@ -314,13 +302,10 @@ export class BookingEnhancementController {
       const result = await queryWithTenant(query, [tenantId], tenantId);
 
       res.json({
-        success: true,
-        data: {
-          todayCollection: parseFloat(result.rows[0].today_collection),
-          monthlyAchieved: parseFloat(result.rows[0].monthly_achieved),
-          todayBookings: parseInt(result.rows[0].today_bookings),
-          monthlyBookings: parseInt(result.rows[0].monthly_bookings)
-        }
+        todayCollection: parseFloat(result.rows[0].today_collection),
+        monthlyAchieved: parseFloat(result.rows[0].monthly_achieved),
+        todayBookings: parseInt(result.rows[0].today_bookings),
+        monthlyBookings: parseInt(result.rows[0].monthly_bookings)
       });
     } catch (error) {
       console.error('Error fetching finance summary:', error);
@@ -332,7 +317,7 @@ export class BookingEnhancementController {
   }
 
   // Email LR receipt
-  static async emailLR(req: AuthRequest, res: Response): Promise<Response | void> {
+  static async emailLR(req: TenantAuthRequest, res: Response): Promise<void> {
     try {
       const { to, cn_number } = req.body;
       const tenantId = req.tenantId!;

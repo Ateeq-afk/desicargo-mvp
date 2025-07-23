@@ -5,6 +5,9 @@ export const validateRequest = (req: Request, res: Response, next: NextFunction)
   const errors = validationResult(req);
   
   if (!errors.isEmpty()) {
+    console.error('Validation errors:', errors.array());
+    console.error('Request body:', req.body);
+    
     res.status(400).json({
       success: false,
       errors: errors.array().map(err => ({

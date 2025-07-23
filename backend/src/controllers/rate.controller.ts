@@ -1,8 +1,226 @@
 import { Request, Response } from 'express';
 import { RateService } from '../services/rate.service';
 import { AuthRequest } from '../middleware/auth.middleware';
+import { TenantAuthRequest } from '../types';
+import { queryWithTenant } from '../config/database';
 
 export class RateController {
+  // Get customer-specific rates with fallback to base rates
+  static async getCustomerRatesWithFallback(req: TenantAuthRequest, res: Response): Promise<void> {
+    try {
+      const { customer_id } = req.params;
+      const { from_city, to_city, goods_type } = req.query;
+
+      if (!customer_id || !from_city || !to_city || !goods_type) {
+        res.status(400).json({
+          success: false,
+          error: 'Customer ID, from city, to city, and goods type are required'
+        });
+        return;
+      }
+
+      // First, check for customer-specific rates
+      const customerRates = await queryWithTenant(
+        `SELECT 
+          r.id, r.customer_id, r.from_city, r.to_city, r.goods_type,
+          r.special_rate as rate_per_kg, r.min_charge, r.effective_from, r.effective_to,
+          'customer_specific' as rate_type,
+          c.name as customer_name
+        FROM customer_rates r
+        JOIN customers c ON r.customer_id = c.id
+        WHERE r.customer_id = $2
+          AND r.tenant_id = $1
+          AND LOWER(r.from_city) = LOWER($3)
+          AND LOWER(r.to_city) = LOWER($4) 
+          AND LOWER(r.goods_type) = LOWER($5)
+          AND r.is_active = true
+          AND (r.effective_from IS NULL OR r.effective_from <= CURRENT_DATE)
+          AND (r.effective_to IS NULL OR r.effective_to >= CURRENT_DATE)
+        ORDER BY r.created_at DESC
+        LIMIT 1`,
+        [req.tenantId!, customer_id, from_city, to_city, goods_type],
+        req.tenantId!
+      );
+
+      let selectedRate = customerRates.rows[0];
+      let rateSource = 'customer_specific';
+
+      // If no customer-specific rate, fall back to base rates
+      if (!selectedRate) {
+        const baseRates = await queryWithTenant(
+          `SELECT 
+            r.id, r.from_city, r.to_city, r.goods_type,
+            r.rate_per_kg, r.min_charge,
+            'base' as rate_type,
+            'Standard Rate' as customer_name
+          FROM rate_master r
+          WHERE r.tenant_id = $1
+            AND LOWER(r.from_city) = LOWER($2)
+            AND LOWER(r.to_city) = LOWER($3)
+            AND LOWER(r.goods_type) = LOWER($4)
+            AND r.is_active = true
+          ORDER BY r.created_at DESC
+          LIMIT 1`,
+          [req.tenantId!, from_city, to_city, goods_type],
+          req.tenantId!
+        );
+
+        selectedRate = baseRates.rows[0];
+        rateSource = 'base';
+      }
+
+      if (!selectedRate) {
+        res.status(404).json({
+          success: false,
+          error: 'No rates found for this route and goods type'
+        });
+        return;
+      }
+
+      res.json({
+        success: true,
+        data: {
+          ...selectedRate,
+          rate_source: rateSource,
+          has_customer_rate: rateSource === 'customer_specific'
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching customer rates:', error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to fetch customer rates'
+      });
+    }
+  }
+
+  // Calculate freight with customer-specific or base rates
+  static async calculateFreightForCustomer(req: TenantAuthRequest, res: Response): Promise<void> {
+    try {
+      const { customer_id, from_city, to_city, goods_type, weight, packages = 1 } = req.body;
+
+      if (!customer_id || !from_city || !to_city || !goods_type || !weight) {
+        res.status(400).json({
+          success: false,
+          error: 'Customer ID, from city, to city, goods type, and weight are required'
+        });
+        return;
+      }
+
+      // Get the best rate for this customer
+      const rateQuery = await queryWithTenant(
+        `-- First, try to get customer-specific rate
+        SELECT 
+          r.special_rate as rate_per_kg, r.min_charge, 'customer_specific' as rate_type,
+          c.name as customer_name, r.effective_from, r.effective_to
+        FROM customer_rates r
+        JOIN customers c ON r.customer_id = c.id
+        WHERE r.customer_id = $2 
+          AND r.tenant_id = $1
+          AND LOWER(r.from_city) = LOWER($3)
+          AND LOWER(r.to_city) = LOWER($4) 
+          AND LOWER(r.goods_type) = LOWER($5)
+          AND r.is_active = true
+          AND (r.effective_from IS NULL OR r.effective_from <= CURRENT_DATE)
+          AND (r.effective_to IS NULL OR r.effective_to >= CURRENT_DATE)
+        
+        UNION ALL
+        
+        -- Fallback to base rate if no customer rate
+        SELECT 
+          r.rate_per_kg, r.min_charge, 'base' as rate_type,
+          'Standard Rate' as customer_name, NULL as effective_from, NULL as effective_to
+        FROM rate_master r
+        WHERE r.tenant_id = $1
+          AND LOWER(r.from_city) = LOWER($3)
+          AND LOWER(r.to_city) = LOWER($4)
+          AND LOWER(r.goods_type) = LOWER($5)
+          AND r.is_active = true
+        
+        ORDER BY 
+          CASE WHEN rate_type = 'customer_specific' THEN 1 ELSE 2 END,
+          effective_from DESC
+        LIMIT 1`,
+        [req.tenantId!, customer_id, from_city, to_city, goods_type],
+        req.tenantId!
+      );
+
+      if (!rateQuery.rows[0]) {
+        res.status(404).json({
+          success: false,
+          error: 'No rates found for this route and goods type'
+        });
+        return;
+      }
+
+      const rate = rateQuery.rows[0];
+      const weightBased = parseFloat(weight) * parseFloat(rate.rate_per_kg);
+      const minCharge = parseFloat(rate.min_charge || 0);
+      const freightAmount = Math.max(weightBased, minCharge);
+
+      // Calculate potential savings if using customer rate
+      let savings = 0;
+      let savingsPercentage = 0;
+      
+      if (rate.rate_type === 'customer_specific') {
+        // Get base rate to calculate savings
+        const baseRateQuery = await queryWithTenant(
+          `SELECT rate_per_kg, min_charge FROM rate_master
+           WHERE tenant_id = $1
+             AND LOWER(from_city) = LOWER($2)
+             AND LOWER(to_city) = LOWER($3)
+             AND LOWER(goods_type) = LOWER($4)
+             AND is_active = true
+           LIMIT 1`,
+          [req.tenantId!, from_city, to_city, goods_type],
+          req.tenantId!
+        );
+
+        if (baseRateQuery.rows[0]) {
+          const baseRate = baseRateQuery.rows[0];
+          const baseAmount = Math.max(
+            parseFloat(weight) * parseFloat(baseRate.rate_per_kg),
+            parseFloat(baseRate.min_charge || 0)
+          );
+          savings = baseAmount - freightAmount;
+          savingsPercentage = baseAmount > 0 ? (savings / baseAmount) * 100 : 0;
+        }
+      }
+
+      res.json({
+        success: true,
+        data: {
+          rate: {
+            rate_per_kg: parseFloat(rate.rate_per_kg),
+            min_charge: parseFloat(rate.min_charge || 0),
+            rate_type: rate.rate_type,
+            customer_name: rate.customer_name
+          },
+          calculation: {
+            weight: parseFloat(weight),
+            packages: parseInt(packages),
+            weight_based_amount: weightBased,
+            min_charge: minCharge,
+            freight_amount: freightAmount,
+            savings: Math.max(0, savings),
+            savings_percentage: Math.max(0, savingsPercentage)
+          },
+          route: {
+            from_city,
+            to_city,
+            goods_type
+          }
+        }
+      });
+    } catch (error) {
+      console.error('Error calculating freight for customer:', error);
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to calculate freight'
+      });
+    }
+  }
+
   // Get all rates
   static async getRates(req: AuthRequest, res: Response) {
     try {

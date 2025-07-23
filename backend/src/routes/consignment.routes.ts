@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { body, query, param } from 'express-validator';
 import * as consignmentController from '../controllers/consignment.controller';
 import { authenticate, authorize, checkBranchAccess } from '../middleware/auth.middleware';
+import { requireTenant } from '../middleware/tenant.middleware';
 import { validate } from '../middleware/validate.middleware';
 
 const router = Router();
@@ -68,6 +69,7 @@ const createConsignmentValidation = [
 router.get(
   '/pending/ogpl',
   authenticate,
+  requireTenant,
   [
     query('branch_id').optional().isUUID().withMessage('Invalid branch ID'),
     query('to_branch_id').optional().isUUID().withMessage('Invalid to branch ID')
@@ -88,6 +90,7 @@ router.get(
 router.post(
   '/',
   authenticate,
+  requireTenant,
   authorize('admin', 'manager', 'operator'),
   createConsignmentValidation,
   validate,
@@ -98,6 +101,7 @@ router.post(
 router.get(
   '/',
   authenticate,
+  requireTenant,
   [
     query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
     query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100'),
@@ -116,6 +120,7 @@ router.get(
 router.get(
   '/:cnNumber',
   authenticate,
+  requireTenant,
   param('cnNumber').notEmpty().withMessage('CN number is required'),
   validate,
   consignmentController.getConsignmentByCN
@@ -125,6 +130,7 @@ router.get(
 router.put(
   '/:id/status',
   authenticate,
+  requireTenant,
   authorize('admin', 'manager', 'operator'),
   [
     param('id').isUUID().withMessage('Invalid consignment ID'),

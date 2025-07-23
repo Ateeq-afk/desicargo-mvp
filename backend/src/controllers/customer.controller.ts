@@ -1,10 +1,13 @@
 import { Request, Response } from 'express';
-import { query } from '../config/database';
+import { query, queryWithTenant } from '../config/database';
 import { AppError } from '../middleware/error.middleware';
-import { JwtPayload } from '../types';
+import { JwtPayload, TenantAuthRequest } from '../types';
+
+// Use TenantAuthRequest instead of local TenantRequest
+type TenantRequest = TenantAuthRequest;
 
 // Create new customer
-export const createCustomer = async (req: Request & { user?: JwtPayload }, res: Response): Promise<void> => {
+export const createCustomer = async (req: TenantRequest, res: Response): Promise<void> => {
   try {
     const {
       name,
@@ -22,35 +25,69 @@ export const createCustomer = async (req: Request & { user?: JwtPayload }, res: 
       special_instructions
     } = req.body;
 
+    // Debug logging
+    console.log('Create customer request:', {
+      tenantId: req.tenantId,
+      userId: req.user?.userId,
+      companyId: req.user?.companyId,
+      body: req.body
+    });
+
+    // Validate required fields
+    if (!name || !phone) {
+      throw new AppError('Name and phone are required', 400);
+    }
+
+    // Validate phone number format
+    if (!/^[0-9]{10}$/.test(phone)) {
+      throw new AppError('Phone number must be 10 digits', 400);
+    }
+
     // Check if customer with same phone exists
-    const existingCustomer = await query(
-      'SELECT id, name FROM customers WHERE company_id = $1 AND phone = $2',
-      [req.user!.companyId, phone]
+    const existingCustomer = await queryWithTenant(
+      'SELECT id, name FROM customers WHERE tenant_id = $1 AND phone = $2',
+      [req.tenantId!, phone],
+      req.tenantId!,
+      req.user?.userId
     );
 
     if (existingCustomer.rows.length > 0) {
       throw new AppError(`Customer already exists with phone ${phone}`, 400);
     }
 
-    const result = await query(
+    // Log for debugging
+    console.log('Creating customer with tenant_id:', req.tenantId);
+    console.log('User info:', { userId: req.user?.userId, companyId: req.user?.companyId });
+    
+    const result = await queryWithTenant(
       `INSERT INTO customers (
-        company_id, name, phone, alternate_phone, email, 
+        company_id, tenant_id, name, phone, alternate_phone, email, 
         address, city, state, pincode, gstin, customer_type,
         credit_limit, credit_days, special_instructions, created_by
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
       RETURNING *`,
       [
-        req.user!.companyId, name, phone, alternate_phone, email,
+        req.user!.companyId, req.tenantId, name, phone, alternate_phone, email,
         address, city, state, pincode, gstin, customer_type,
         credit_limit, credit_days, special_instructions, req.user!.userId
-      ]
+      ],
+      req.tenantId!,
+      req.user?.userId
     );
+
+    console.log('Customer created successfully:', result.rows[0].id);
 
     res.status(201).json({
       success: true,
       data: result.rows[0]
     });
   } catch (error) {
+    console.error('Create customer error:', error);
+    console.error('Error details:', {
+      message: error instanceof Error ? error.message : 'Unknown error',
+      stack: error instanceof Error ? error.stack : undefined
+    });
+    
     res.status(error instanceof AppError ? error.statusCode : 500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Failed to create customer'
@@ -59,7 +96,7 @@ export const createCustomer = async (req: Request & { user?: JwtPayload }, res: 
 };
 
 // Update customer
-export const updateCustomer = async (req: Request & { user?: JwtPayload }, res: Response): Promise<void> => {
+export const updateCustomer = async (req: TenantRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
     const {
@@ -79,7 +116,7 @@ export const updateCustomer = async (req: Request & { user?: JwtPayload }, res: 
       is_active
     } = req.body;
 
-    const result = await query(
+    const result = await queryWithTenant(
       `UPDATE customers SET
         name = COALESCE($1, name),
         phone = COALESCE($2, phone),
@@ -96,13 +133,15 @@ export const updateCustomer = async (req: Request & { user?: JwtPayload }, res: 
         special_instructions = COALESCE($13, special_instructions),
         is_active = COALESCE($14, is_active),
         updated_at = CURRENT_TIMESTAMP
-      WHERE id = $15 AND company_id = $16
+      WHERE id = $15 AND tenant_id = $16
       RETURNING *`,
       [
         name, phone, alternate_phone, email, address, city, state,
         pincode, gstin, customer_type, credit_limit, credit_days,
-        special_instructions, is_active, id, req.user!.companyId
-      ]
+        special_instructions, is_active, id, req.tenantId!
+      ],
+      req.tenantId!,
+      req.user?.userId
     );
 
     if (result.rows.length === 0) {
@@ -122,13 +161,13 @@ export const updateCustomer = async (req: Request & { user?: JwtPayload }, res: 
 };
 
 // Get customers with pagination and search
-export const getCustomers = async (req: Request & { user?: JwtPayload }, res: Response): Promise<void> => {
+export const getCustomers = async (req: TenantRequest, res: Response): Promise<void> => {
   try {
     const { page = 1, limit = 10, search = '', customer_type, is_active } = req.query;
     const offset = (Number(page) - 1) * Number(limit);
 
-    let whereClause = 'WHERE c.company_id = $1';
-    const params: any[] = [req.user!.companyId];
+    let whereClause = 'WHERE c.tenant_id = $1';
+    const params: any[] = [req.tenantId!];
     let paramIndex = 2;
 
     if (search) {
@@ -150,14 +189,15 @@ export const getCustomers = async (req: Request & { user?: JwtPayload }, res: Re
     }
 
     // Get total count
-    const countResult = await query(
+    const countResult = await queryWithTenant(
       `SELECT COUNT(*) FROM customers c ${whereClause}`,
-      params
+      params,
+      req.tenantId!
     );
 
     // Get customers
     params.push(Number(limit), offset);
-    const result = await query(
+    const result = await queryWithTenant(
       `SELECT c.*, 
         COALESCE(c.total_bookings, 0) as total_bookings,
         COALESCE(c.total_business_value, 0) as total_business_value,
@@ -166,7 +206,8 @@ export const getCustomers = async (req: Request & { user?: JwtPayload }, res: Re
       ${whereClause}
       ORDER BY c.created_at DESC
       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
-      params
+      params,
+      req.tenantId!
     );
 
     res.json({
@@ -190,9 +231,16 @@ export const getCustomers = async (req: Request & { user?: JwtPayload }, res: Re
 };
 
 // Search customers for autocomplete
-export const searchCustomers = async (req: Request & { user?: JwtPayload }, res: Response): Promise<void> => {
+export const searchCustomers = async (req: TenantRequest, res: Response): Promise<void> => {
   try {
     const { q = '', limit = 10 } = req.query;
+
+    console.log('Search customers request:', { 
+      query: q, 
+      limit, 
+      tenantId: req.tenantId,
+      userId: req.user?.userId 
+    });
 
     if (String(q).length < 2) {
       res.json({
@@ -205,43 +253,80 @@ export const searchCustomers = async (req: Request & { user?: JwtPayload }, res:
       return;
     }
 
-    // Search customers using trigram similarity
-    const searchResult = await query(
-      `SELECT 
-        id, name, phone, alternate_phone, email, address, 
-        city, state, pincode, gstin, customer_type,
-        credit_limit, credit_days, is_active,
-        similarity(name, $2) AS name_similarity,
-        similarity(phone, $2) AS phone_similarity
-      FROM customers
-      WHERE company_id = $1 
-        AND is_active = true
-        AND (
-          name % $2 OR 
-          phone % $2 OR
-          name ILIKE $3 OR 
-          phone ILIKE $3
-        )
-      ORDER BY 
-        GREATEST(name_similarity, phone_similarity) DESC,
-        total_bookings DESC
-      LIMIT $4`,
-      [req.user!.companyId, String(q), `%${q}%`, Number(limit)]
-    );
+    // Search customers - try trigram similarity first, fallback to basic search
+    let searchResult;
+    try {
+      // Try trigram similarity search first
+      searchResult = await queryWithTenant(
+        `SELECT 
+          id, name, phone, alternate_phone, email, address, 
+          city, state, pincode, gstin, customer_type,
+          credit_limit, credit_days, is_active,
+          similarity(name, $2) AS name_similarity,
+          similarity(phone, $2) AS phone_similarity
+        FROM customers
+        WHERE tenant_id = $1 
+          AND is_active = true
+          AND (
+            name % $2 OR 
+            phone % $2 OR
+            name ILIKE $3 OR 
+            phone ILIKE $3
+          )
+        ORDER BY 
+          GREATEST(name_similarity, phone_similarity) DESC,
+          total_bookings DESC
+        LIMIT $4`,
+        [req.tenantId!, String(q), `%${q}%`, Number(limit)],
+        req.tenantId!
+      );
+    } catch (trigramError) {
+      console.warn('Trigram search failed, falling back to basic search:', trigramError);
+      // Fallback to basic ILIKE search
+      searchResult = await queryWithTenant(
+        `SELECT 
+          id, name, phone, alternate_phone, email, address, 
+          city, state, pincode, gstin, customer_type,
+          credit_limit, credit_days, is_active,
+          CASE WHEN name ILIKE $2 THEN 3
+               WHEN name ILIKE $3 THEN 2
+               WHEN phone ILIKE $3 THEN 1
+               ELSE 0 END AS search_score
+        FROM customers
+        WHERE tenant_id = $1 
+          AND is_active = true
+          AND (
+            name ILIKE $3 OR 
+            phone ILIKE $3 OR
+            email ILIKE $3
+          )
+        ORDER BY search_score DESC, total_bookings DESC, name
+        LIMIT $4`,
+        [req.tenantId!, String(q), `%${q}%`, Number(limit)],
+        req.tenantId!
+      );
+    }
 
     // Get recent customers (last 5 used)
-    const recentResult = await query(
+    const recentResult = await queryWithTenant(
       `SELECT DISTINCT ON (c.id)
         c.id, c.name, c.phone, c.alternate_phone, c.email, 
         c.address, c.city, c.state, c.pincode, c.gstin, 
         c.customer_type, c.credit_limit, c.credit_days
       FROM customers c
       JOIN consignments cn ON (c.phone = cn.consignor_phone OR c.phone = cn.consignee_phone)
-      WHERE c.company_id = $1 AND c.is_active = true
+        AND cn.tenant_id = c.tenant_id
+      WHERE c.tenant_id = $1 AND c.is_active = true
       ORDER BY c.id, cn.booking_date DESC, cn.booking_time DESC
       LIMIT 5`,
-      [req.user!.companyId]
+      [req.tenantId!],
+      req.tenantId!
     );
+
+    console.log('Search results:', {
+      customersFound: searchResult.rows.length,
+      recentFound: recentResult.rows.length
+    });
 
     res.json({
       success: true,
@@ -251,6 +336,12 @@ export const searchCustomers = async (req: Request & { user?: JwtPayload }, res:
       }
     });
   } catch (error) {
+    console.error('Search customers error:', error);
+    console.error('Error details:', {
+      message: error instanceof Error ? error.message : 'Unknown error',
+      stack: error instanceof Error ? error.stack : undefined
+    });
+    
     res.status(error instanceof AppError ? error.statusCode : 500).json({
       success: false,
       error: error instanceof Error ? error.message : 'Failed to search customers'
@@ -259,11 +350,11 @@ export const searchCustomers = async (req: Request & { user?: JwtPayload }, res:
 };
 
 // Get customer by ID
-export const getCustomerById = async (req: Request & { user?: JwtPayload }, res: Response): Promise<void> => {
+export const getCustomerById = async (req: TenantRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
 
-    const result = await query(
+    const result = await queryWithTenant(
       `SELECT c.*,
         COUNT(DISTINCT cn.id) as total_bookings,
         COALESCE(SUM(cn.freight_amount), 0) as total_business_value,
@@ -271,10 +362,11 @@ export const getCustomerById = async (req: Request & { user?: JwtPayload }, res:
         COALESCE(c.current_outstanding, 0) as current_outstanding
       FROM customers c
       LEFT JOIN consignments cn ON (c.phone = cn.consignor_phone OR c.phone = cn.consignee_phone)
-        AND cn.company_id = c.company_id
-      WHERE c.id = $1 AND c.company_id = $2
+        AND cn.tenant_id = c.tenant_id
+      WHERE c.id = $1 AND c.tenant_id = $2
       GROUP BY c.id`,
-      [id, req.user!.companyId]
+      [id, req.tenantId!],
+      req.tenantId!
     );
 
     if (result.rows.length === 0) {
@@ -282,16 +374,20 @@ export const getCustomerById = async (req: Request & { user?: JwtPayload }, res:
     }
 
     // Get recent bookings
-    const bookingsResult = await query(
+    const bookingsResult = await queryWithTenant(
       `SELECT 
-        cn_number, booking_date, from_city, to_city,
-        freight_amount, payment_status, delivery_status
-      FROM consignments
-      WHERE company_id = $1 
-        AND (consignor_phone = $2 OR consignee_phone = $2)
-      ORDER BY booking_date DESC, booking_time DESC
+        cn_number, booking_date, 
+        fb.name as from_branch, tb.name as to_branch,
+        freight_amount, payment_type, status as delivery_status
+      FROM consignments c
+      LEFT JOIN branches fb ON c.from_branch_id = fb.id
+      LEFT JOIN branches tb ON c.to_branch_id = tb.id
+      WHERE c.tenant_id = $1 
+        AND (c.consignor_phone = $2 OR c.consignee_phone = $2)
+      ORDER BY c.booking_date DESC, c.booking_time DESC
       LIMIT 10`,
-      [req.user!.companyId, result.rows[0].phone]
+      [req.tenantId!, result.rows[0].phone],
+      req.tenantId!
     );
 
     res.json({
@@ -310,23 +406,24 @@ export const getCustomerById = async (req: Request & { user?: JwtPayload }, res:
 };
 
 // Get frequent customers
-export const getFrequentCustomers = async (req: Request & { user?: JwtPayload }, res: Response): Promise<void> => {
+export const getFrequentCustomers = async (req: TenantRequest, res: Response): Promise<void> => {
   try {
-    const result = await query(
+    const result = await queryWithTenant(
       `SELECT 
         c.*,
         COUNT(DISTINCT cn.id) as booking_count,
         COALESCE(SUM(cn.freight_amount), 0) as total_value
       FROM customers c
       JOIN consignments cn ON (c.phone = cn.consignor_phone OR c.phone = cn.consignee_phone)
-        AND cn.company_id = c.company_id
-      WHERE c.company_id = $1 
+        AND cn.tenant_id = c.tenant_id
+      WHERE c.tenant_id = $1 
         AND c.is_active = true
         AND cn.booking_date >= CURRENT_DATE - INTERVAL '90 days'
       GROUP BY c.id
       ORDER BY booking_count DESC
       LIMIT 10`,
-      [req.user!.companyId]
+      [req.tenantId!],
+      req.tenantId!
     );
 
     res.json({
@@ -342,16 +439,17 @@ export const getFrequentCustomers = async (req: Request & { user?: JwtPayload },
 };
 
 // Delete customer (soft delete)
-export const deleteCustomer = async (req: Request & { user?: JwtPayload }, res: Response): Promise<void> => {
+export const deleteCustomer = async (req: TenantRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
 
-    const result = await query(
+    const result = await queryWithTenant(
       `UPDATE customers 
       SET is_active = false, updated_at = CURRENT_TIMESTAMP
-      WHERE id = $1 AND company_id = $2
+      WHERE id = $1 AND tenant_id = $2
       RETURNING id, name`,
-      [id, req.user!.companyId]
+      [id, req.tenantId!],
+      req.tenantId!
     );
 
     if (result.rows.length === 0) {
@@ -370,8 +468,40 @@ export const deleteCustomer = async (req: Request & { user?: JwtPayload }, res: 
   }
 };
 
+// Reactivate a customer
+export const reactivateCustomer = async (req: TenantRequest, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    console.log('Reactivating customer:', id, 'Tenant:', req.tenantId);
+
+    const result = await queryWithTenant(
+      `UPDATE customers 
+      SET is_active = true, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $1 AND tenant_id = $2
+      RETURNING *`,
+      [id, req.tenantId!],
+      req.tenantId!
+    );
+
+    if (result.rows.length === 0) {
+      throw new AppError('Customer not found', 404);
+    }
+
+    res.json({
+      success: true,
+      message: `Customer ${result.rows[0].name} has been reactivated`,
+      data: result.rows[0]
+    });
+  } catch (error) {
+    res.status(error instanceof AppError ? error.statusCode : 500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to reactivate customer'
+    });
+  }
+};
+
 // Import customers from CSV/Excel
-export const importCustomers = async (req: Request & { user?: JwtPayload }, res: Response): Promise<void> => {
+export const importCustomers = async (req: TenantRequest, res: Response): Promise<void> => {
   try {
     const { customers } = req.body;
 
@@ -385,61 +515,59 @@ export const importCustomers = async (req: Request & { user?: JwtPayload }, res:
     for (const customer of customers) {
       try {
         // Check if customer exists
-        const existing = await query(
-          'SELECT id FROM customers WHERE company_id = $1 AND phone = $2',
-          [req.user!.companyId, customer.phone]
+        const existing = await queryWithTenant(
+          'SELECT id FROM customers WHERE tenant_id = $1 AND phone = $2',
+          [req.tenantId!, customer.phone],
+          req.tenantId!
         );
 
         if (existing.rows.length > 0) {
           // Update existing customer
-          await query(
+          await queryWithTenant(
             `UPDATE customers SET
               name = $1, email = $2, address = $3, city = $4,
               state = $5, pincode = $6, gstin = $7,
               customer_type = COALESCE($8, customer_type),
               updated_at = CURRENT_TIMESTAMP
-            WHERE company_id = $9 AND phone = $10`,
+            WHERE tenant_id = $9 AND phone = $10`,
             [
               customer.name, customer.email, customer.address,
               customer.city, customer.state, customer.pincode,
               customer.gstin, customer.customer_type || 'regular',
-              req.user!.companyId, customer.phone
-            ]
+              req.tenantId!, customer.phone
+            ],
+            req.tenantId!
           );
         } else {
           // Insert new customer
-          await query(
+          await queryWithTenant(
             `INSERT INTO customers (
-              company_id, name, phone, email, address, city,
+              company_id, tenant_id, name, phone, email, address, city,
               state, pincode, gstin, customer_type, created_by
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
             [
-              req.user!.companyId, customer.name, customer.phone,
+              req.user!.companyId, req.tenantId, customer.name, customer.phone,
               customer.email, customer.address, customer.city,
               customer.state, customer.pincode, customer.gstin,
               customer.customer_type || 'regular', req.user!.userId
-            ]
+            ],
+            req.tenantId!
           );
         }
         successCount++;
-      } catch (error) {
+      } catch (err: any) {
         errors.push({
-          row: customers.indexOf(customer) + 1,
-          name: customer.name,
           phone: customer.phone,
-          error: error instanceof Error ? error.message : 'Import failed'
+          name: customer.name,
+          error: err.message
         });
       }
     }
 
     res.json({
       success: true,
-      data: {
-        totalRecords: customers.length,
-        successCount,
-        failedCount: errors.length,
-        errors: errors.slice(0, 10) // Return first 10 errors
-      }
+      message: `Import completed. ${successCount} customers imported successfully`,
+      errors: errors.length > 0 ? errors : undefined
     });
   } catch (error) {
     res.status(error instanceof AppError ? error.statusCode : 500).json({

@@ -41,7 +41,7 @@ export const createTenant = async (req: Request, res: Response): Promise<void> =
 
     // Check if tenant code already exists
     const existingTenant = await query(
-      'SELECT id FROM tenants WHERE tenant_code = $1',
+      'SELECT id FROM tenants WHERE code = $1',
       [tenantCode]
     );
 
@@ -68,17 +68,12 @@ export const createTenant = async (req: Request, res: Response): Promise<void> =
 
       await client.query(
         `INSERT INTO tenants (
-          id, tenant_code, company_name, contact_email, contact_phone,
-          plan_type, trial_ends_at, max_users, max_branches, max_consignments_per_month,
-          onboarding_completed
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+          id, code, name, email, phone,
+          subscription_plan, subscription_ends_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [
           tenantId, tenantCode, companyName, contactEmail, contactPhone,
-          planType, planType === 'trial' ? trialEndsAt : null,
-          planType === 'trial' ? 5 : 50,
-          planType === 'trial' ? 2 : 10,
-          planType === 'trial' ? 1000 : 10000,
-          false
+          planType, planType === 'trial' ? trialEndsAt : null
         ]
       );
 
@@ -174,11 +169,10 @@ export const getTenantInfo = async (req: Request, res: Response): Promise<void> 
 
     const result = await query(
       `SELECT 
-        id, tenant_code, company_name, contact_email,
-        plan_type, trial_ends_at, is_active, created_at,
-        logo_url, primary_color, secondary_color
+        id, code as tenant_code, name as company_name, email as contact_email,
+        subscription_plan as plan_type, subscription_ends_at as trial_ends_at, is_active, created_at
        FROM tenants 
-       WHERE tenant_code = $1`,
+       WHERE code = $1`,
       [code]
     );
 

@@ -11,6 +11,7 @@ router.use(superAdminOnly);
 
 // Tenant Management
 router.get('/tenants', superAdminController.getAllTenants);
+router.post('/tenants', superAdminController.createTenant);
 router.get('/tenants/:id', superAdminController.getTenantDetails);
 router.put('/tenants/:id', superAdminController.updateTenant);
 router.delete('/tenants/:id', superAdminController.deleteTenant);

@@ -1,21 +1,26 @@
-import { Response, NextFunction } from 'express';
-import { AuthRequest } from '../types';
-import pool from '../config/database';
+import { Request, Response, NextFunction } from 'express';
+import { pool } from '../config/database';
+import { JwtPayload } from '../types';
+
+interface AuthRequest extends Request {
+  user?: JwtPayload;
+}
 
 export const superAdminOnly = async (
   req: AuthRequest, 
   res: Response, 
   next: NextFunction
-) => {
+): Promise<void> => {
   try {
     // Check if user is authenticated
-    if (!req.user || !req.user.id) {
-      return res.status(401).json({ error: 'Authentication required' });
+    if (!req.user || !req.user.userId) {
+      res.status(401).json({ error: 'Authentication required' });
+      return;
     }
 
     // Check if user is superadmin
     const userQuery = 'SELECT is_superadmin FROM users WHERE id = $1';
-    const result = await pool.query(userQuery, [req.user.id]);
+    const result = await pool.query(userQuery, [req.user.userId]);
 
     if (result.rows.length === 0 || !result.rows[0].is_superadmin) {
       // Log unauthorized access attempt
@@ -25,7 +30,7 @@ export const superAdminOnly = async (
       `;
       
       await pool.query(logQuery, [
-        req.user.id,
+        req.user.userId,
         'UNAUTHORIZED_ACCESS_ATTEMPT',
         JSON.stringify({ 
           path: req.path, 
@@ -35,10 +40,11 @@ export const superAdminOnly = async (
         req.ip
       ]);
 
-      return res.status(403).json({ 
+      res.status(403).json({ 
         error: 'SuperAdmin access required',
         message: 'This action requires superadmin privileges'
       });
+      return;
     }
 
     // Log superadmin access
@@ -48,7 +54,7 @@ export const superAdminOnly = async (
     `;
     
     await pool.query(accessLogQuery, [
-      req.user.id,
+      req.user.userId,
       'API_ACCESS',
       JSON.stringify({ 
         path: req.path, 

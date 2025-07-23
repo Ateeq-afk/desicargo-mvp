@@ -261,8 +261,8 @@ export const getConsignmentByCN = async (req: TenantAuthRequest, res: Response):
        LEFT JOIN branches tb ON c.to_branch_id = tb.id
        LEFT JOIN branches cb ON c.current_branch_id = cb.id
        LEFT JOIN users u ON c.created_by = u.id
-       WHERE c.cn_number = $1 AND c.tenant_id = $2`,
-      [cnNumber, tenantId],
+       WHERE c.cn_number = $1`,
+      [cnNumber],
       tenantId
     );
 
@@ -274,6 +274,19 @@ export const getConsignmentByCN = async (req: TenantAuthRequest, res: Response):
       return;
     }
 
+    const consignment = result.rows[0];
+    
+    // Check branch access for non-admin users
+    if (req.user?.role !== 'admin' && req.user?.role !== 'superadmin' && req.user?.branchId) {
+      if (consignment.from_branch_id !== req.user.branchId && consignment.to_branch_id !== req.user.branchId) {
+        res.status(403).json({
+          success: false,
+          error: 'Access denied'
+        });
+        return;
+      }
+    }
+
     // Get tracking history
     const trackingResult = await queryWithTenant(
       `SELECT 
@@ -283,16 +296,16 @@ export const getConsignmentByCN = async (req: TenantAuthRequest, res: Response):
        FROM tracking_history th
        LEFT JOIN branches b ON th.branch_id = b.id
        LEFT JOIN users u ON th.created_by = u.id
-       WHERE th.consignment_id = $1 AND th.tenant_id = $2
+       WHERE th.consignment_id = $1
        ORDER BY th.created_at DESC`,
-      [result.rows[0].id, tenantId],
+      [consignment.id],
       tenantId
     );
 
     res.json({
       success: true,
       data: {
-        ...result.rows[0],
+        ...consignment,
         tracking_history: trackingResult.rows
       }
     });
